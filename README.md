@@ -5,16 +5,16 @@ This project demonstrates how to build a low-power, Wi-Fi or Thread-capable air 
 
 ---
 
-## 📦 Overview
+## Overview
 
-The ESP32 Matter Environmental Sensor measures **temperature**, **humidity**, **pressure**, and **indoor air quality (IAQ)** using the Bosch BME680 environmental sensor and the BSEC2 library for accurate, compensated readings.  
+The ESP32 Matter Environmental Sensor measures temperature, humidity, pressure, and indoor air quality (IAQ) using the Bosch BME680 environmental sensor and the BSEC2 library for accurate, compensated readings.  
 An optional OLED display provides real-time readouts, while Matter support enables direct commissioning with any compatible ecosystem controller.
 
 This project is designed for simple assembly, minimal wiring, and reliable 24/7 operation when powered from a compact USB charger.
 
 ---
 
-## 🧰 Hardware
+## Hardware
 
 | Component | Description / Notes |
 |------------|--------------------|
@@ -23,34 +23,27 @@ This project is designed for simple assembly, minimal wiring, and reliable 24/7 
 | **Apple 5W USB Charger** | Reliable, low-noise 5 V supply for continuous operation. |
 | **USB-A Male Plug** | Interfaces the charger output to the device enclosure. |
 | **USB-C Male Plug** | Connects to the XIAO board for power and flashing. |
-| **Optional: SH1106 OLED Display (1.3")** | Displays temperature, humidity, pressure, and IAQ values locally. Connected via I²C (address `0x3C`). |
-
-> ⚙️ *Future versions may include a VEML7700 ambient light sensor for automatic display dimming.*
+| **Optional: 1.3" Monochrome OLED Display ([Amazon link](https://www.amazon.com/dp/B0C3L7N917))** | Displays temperature, humidity, pressure, and IAQ values locally. Connected via I²C (address `0x3C`).
 
 ---
 
-## 🧩 Arduino Sketch & Libraries
+## Arduino Sketch & Libraries
 
-The firmware is written in **Arduino**, using Espressif’s **Matter** support and Bosch’s **BSEC2** library for compensated BME680 readings.
+The firmware is written in C using Arduino IDE, Espressif's [Arduino-ESP32 library](https://github.com/espressif/arduino-esp32) (which features built-in Matter support) and [Bosch’s BSEC2 library](https://github.com/boschsensortec/Bosch-BSEC2-Library) for compensated BME680 readings.
 
 **Core Features**
 - Matter over Wi-Fi or Thread
 - BME680 via BSEC2 for accurate IAQ, temperature, humidity, and pressure
 - Periodic state saving (`setState()` / `getState()`) for stable IAQ tracking
 - OLED visualization (optional)
-- JSON-based serial diagnostics
 
 **Required Libraries**
-- `Arduino_BSEC2` (Bosch BSEC2)
+- `Arduino_BSEC2` (Bosch BSEC2, note BSEC does not work)
 - `Wire.h`
 - `Adafruit_Sensor`
 - `SH1106Wire` *(for OLED display)*
 - `QRCodeOLED` *(for displaying the Matter QR code during commissioning)*
 - `ESP_Matter` *(or Espressif’s Matter Arduino support package)*
-
-> Example sketches:  
-> - `/src/esp32_matter_env_sensor.ino`  
-> - `/src/bme680_bsec2_helpers.cpp`
 
 ---
 
@@ -59,15 +52,15 @@ The firmware is written in **Arduino**, using Espressif’s **Matter** support a
 A simple, vented enclosure designed for passive airflow and unobtrusive wall or outlet mounting.
 
 **Files**
-- `/3d_models/enclosure_top.stl`
-- `/3d_models/enclosure_bottom.stl`
-- `/3d_models/usb_adapter_bracket.stl`
-- `/3d_models/oled_front_variant.stl` *(optional display version)*
+- `/Main Housing - Main Housing.stl`
+- `/Solid Lid - Lid - Solid.stl` 
+- `/1.3- Screen Lid - Hosyond - Lid - OLED.stl` *for optional screen*
+- `/1.3- Screen Lid - Hosyond - OLED Retaining Bracket` *for optional screen*
 
 **Notes**
 - The case design accommodates the XIAO ESP32-C6, BME680 breakout, and optional SH1106 OLED.
-- Optimized for front-facing airflow and USB-powered mounting directly on a 5 W charger.
-- Printed in PLA or PETG recommended for indoor use.
+- Simple quasi-convection ventilation (that's the idea at least) to allow for air entering on the sides to both cool the ESP and bring fresh air over the BME680 module.
+- Printed in PLA or PETG.
 
 ---
 
@@ -84,16 +77,18 @@ Connect the BME680 (and optional OLED) to the XIAO ESP32-C6 over I²C:
 
 **Steps**
 1. Wire the BME680 (and OLED) to the XIAO as shown above.  
-2. Flash the Arduino sketch via USB-C.  
+2. Flash the Arduino sketch via USB-C. 
 3. Power the unit using the Apple 5 W charger with USB-A → USB-C adapter.  
 4. On startup, scan the QR code shown on the OLED (or via serial output) to commission the device via a Matter controller.
 
+**NOTE-TO-SELF**
+
+*- Add USB wiring steps and info for charger to USB-A plug and USB-A plug to USB-C plug as well as note about using a male to female USB-A extension to allow for programming in-situ.
+- Add note about dropping VEML7700 lux sensor support due to dimming range being small and not worth the added complexity. It did work though.*
 ---
 
 ## 🧠 Future Enhancements
 
-- Thread support and border router discovery  
-- OTA updates  
 - Ambient light sensor integration for display dimming  
 - Expanded Matter cluster support (e.g., VOC index, CO₂, etc.)
 
