@@ -77,9 +77,9 @@ Connect the BME680 (and optional OLED) to the XIAO ESP32-C6 over I²C:
 
 **Steps**
 1. Wire the BME680 (and OLED) to the XIAO as shown above.  
-2. Flash the Arduino sketch via USB-C. 
+2. Flash the Arduino sketch to ESP32-C6 "Huge APP (3MB No OTA/1MB SPIFFS)" partition scheme is selected or else it won't compile. 
 3. Power the unit using the Apple 5 W charger with USB-A → USB-C adapter.  
-4. On startup, scan the QR code shown on the OLED (or via serial output) to commission the device via a Matter controller.
+4. On startup, scan the QR code shown on the OLED or displayed in serial output to commission the device via a Matter or HomeKit controller.
 
 **NOTE-TO-SELF**
 
