@@ -83,8 +83,8 @@ Connect the BME680 (and optional OLED) to the XIAO ESP32-C6 over I²C:
 
 **NOTE-TO-SELF**
 
-*- Add USB wiring steps and info for charger to USB-A plug and USB-A plug to USB-C plug as well as note about using a male to female USB-A extension to allow for programming in-situ.
-- Add note about dropping VEML7700 lux sensor support due to dimming range being small and not worth the added complexity. It did work though.*
+- Add USB wiring steps and info for charger to USB-A plug and USB-A plug to USB-C plug as well as note about using a male to female USB-A extension to allow for programming in-situ.
+- Add note about dropping VEML7700 lux sensor support due to dimming range being small and not worth the added complexity. It did work though.
 ---
 
 ## 🧠 Future Enhancements
