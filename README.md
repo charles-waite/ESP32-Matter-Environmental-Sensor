@@ -38,7 +38,7 @@ The firmware is written in C using Arduino IDE, Espressif's [Arduino-ESP32 libra
 - OLED visualization (optional)
 
 **Required Libraries**
-- `Arduino_BSEC2` (Bosch BSEC2, note BSEC does not work)
+- `Arduino_BSEC2` (Note: BSEC does not work. For BSEC2 compatibility on the ESP32-C6, you must copy the binaries for the ESP32-S3 and rename to ESP32-C6)
 - `Wire.h`
 - `Adafruit_Sensor`
 - `SH1106Wire` *(for OLED display)*
