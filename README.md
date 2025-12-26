@@ -91,8 +91,9 @@ Connect the BME680 (and optional OLED) to the XIAO ESP32-C6 over I²C:
 
 - Ambient light sensor integration for display dimming  
 - Expanded Matter cluster support (e.g., VOC index, CO₂, etc.)
-
----
+- external button(s) to trigger interactions like Wake OLED on press, Matter decommissioning, display mode, etc.
+- Settings menu to allow for on-device temoerature offset, unit preferences, OLED emable/disable, OLED brightness, OLED timeout)
+- HomeAssitant settings/config integration.
 
 ## 📜 License
 
