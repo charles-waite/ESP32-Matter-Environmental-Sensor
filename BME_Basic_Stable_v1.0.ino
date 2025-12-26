@@ -39,7 +39,7 @@
 // ===== Env / units =====
 #define ALTITUDE_M       97.8
 #define ALTITUDE_FT      321
-#define TEMP_OFFSET_C    -4.9 //Value is in Celsius
+#define TEMP_OFFSET_C    4.9 //Value is in Celsius
 #define USE_SEA_LEVEL_P  1
 
 const uint32_t UI_INTERVAL_MS = 3000;
@@ -138,7 +138,7 @@ void saveBsecStateIfReady(uint32_t nowMs){
 
 // ---------- UI ----------
 void computeDerived(){
-  float tC = isfinite(vTempC) ? (vTempC + TEMP_OFFSET_C) : NAN;
+  float tC = isfinite(vTempC) ? (vTempC) : NAN;
   vTempF = isfinite(tC) ? c_to_f(tC) : NAN;
   float p = vPres_hPa;
   if(USE_SEA_LEVEL_P && isfinite(p) && isfinite(tC)){
@@ -268,7 +268,7 @@ void updateMatterEndpoints() {
 
   // ---- Temperature (°C -> 0.01°C int16) ----
   if (isfinite(vTempC)) {
-    float   tC = vTempC + TEMP_OFFSET_C;
+    float   tC = vTempC;
     int16_t tC_x100 = (int16_t) lroundf(tC * 100.0f);
     esp_matter_attr_val_t val = esp_matter_int16(tC_x100);
     attribute::update(eidTemp, CL_TEMPERATURE_MEASUREMENT, ATTR_MEASURED_VALUE, &val);
@@ -286,7 +286,7 @@ void updateMatterEndpoints() {
   if (isfinite(vPres_hPa)) {
     float p_hPa = vPres_hPa;
     if (USE_SEA_LEVEL_P && isfinite(vTempC)) {
-      p_hPa = seaLevelPressure_hPa(vPres_hPa, vTempC + TEMP_OFFSET_C, ALTITUDE_M);
+      p_hPa = seaLevelPressure_hPa(vPres_hPa, vTempC, ALTITUDE_M);
     }
     int16_t p_deci_kPa = (int16_t) lroundf(p_hPa);  // e.g. 1013.2 hPa -> 1013 (== 101.3 kPa)
     esp_matter_attr_val_t val = esp_matter_int16(p_deci_kPa);
@@ -314,7 +314,7 @@ void setup(){
   loadBsecState();
   env.updateSubscription(sensorList, sizeof(sensorList)/sizeof(sensorList[0]), BSEC_SAMPLE_RATE_LP);
   env.attachCallback(onBsecOutputs);
-
+  env.setTemperatureOffset(TEMP_OFFSET_C);
   // If your build DISABLES BLE commissioning, uncomment and set Wi-Fi:
   // #if !CONFIG_ENABLE_CHIPOBLE
   //   WiFi.mode(WIFI_STA);
