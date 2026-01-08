@@ -1,32 +1,37 @@
-// Copyright 2025 Espressif Systems (Shanghai) PTE LTD
+// XIAO ESP32-C6 | BME680 (BSEC2) | SH1106 OLED | Arduino Matter (Wi-Fi)
+// Endpoints: Temperature, Relative Humidity, Pressure
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-
-//     http://www.apache.org/licenses/LICENSE-2.0
+// Behavior:
+//  • If NOT commissioned: draws a one-time, high-contrast QR ("MT:..." payload) -> no redraw flicker
+//  • If commissioned: shows sensor screen, updates endpoints & UI every 3s
+//  • Hold BOOT 3s: decommission & show QR again
 //
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Libraries:
+//  • BSEC2 + blob (bsec2.h)
+//  • ThingPulse SH1106 (SH1106Wire.h)
+//  • QRcodeOled (qrcodeoled.h)   <-- lowercase header
+//  • Arduino-ESP32 core 3.3.x Matter (Matter.h, MatterEndPoint.h)
+//------------------------------------------------------------------//
+//    ---==== HUMAN WRITTEN NOTES ====---
+//  This sketch is fully functional as a standalone module.
+//  BME680 Sensor -> Temp, Humidity, Pressure, eCO2, IAQ as Matter Endpoints. 
+//  SH1106-based 1.3" 128x64 OLED Display -> Shows QR Code for provisioning then basic sensor data on one screen.
+//  Uses BSEC2 library to interpret raw sensor data.
+//  BSEC calculated Temperature offset tested to be ~6.5°C in Solid lid housing
 
-/* - Tiny Room Sensor (XIAO ESP32-C6) - Headless
- * - Matter over WiFi (Temp°C + Humidity %RH)
- * - Commissioning info via Serial
- * - BOOT hold >5s to decommission
- */
-
-// Matter Manager
 #include <Matter.h>
 #include <MatterEndPoint.h>
-#include "esp_pm.h"
-#include <Wire.h>
-#include <Adafruit_SHT4x.h>
 #include <MatterEndpoints/MatterTemperatureSensorBattery.h>
+#include "esp_pm.h"
 #include "esp_openthread.h"
 #include <openthread/link.h>
+#include <Wire.h>
+#include <bsec2.h>
+#include <SH1106Wire.h>
+#include <qrcodeoled.h>
+#include <Preferences.h>
+#include <math.h>
+
 #if !CONFIG_ENABLE_CHIPOBLE
 // if the device can be commissioned using BLE, WiFi is not used - save flash space
 #include <WiFi.h>
@@ -38,156 +43,427 @@ static constexpr bool DEBUG_SERIAL = false;
 // ------------ Board Pin Defs -----------------
 #define SDA_PIN 22
 #define SCL_PIN 23
-#define VBAT_ADC_PIN A0   // GPIO0 (XIAO ESP32-C6 A0)
+#define OLED_ADDR 0x3C
+#define BME_ADDR 0x77
+#define BOOT_BTN 9  // XIAO ESP32-C6 BOOT (active LOW)
 
-// ----------- Matter Endpoints -------------
-MatterTemperatureSensorBattery TempSensor;      // °C (Matter spec)
-MatterHumiditySensor    HumiditySensor;  // %RH
 
-// CONFIG_ENABLE_CHIPOBLE is enabled when BLE is used to commission the Matter Network
-#if !CONFIG_ENABLE_CHIPOBLE
-// WiFi is manually set and started
-const char *ssid = "your-ssid";          // Change this to your WiFi SSID
-const char *password = "your-password";  // Change this to your WiFi password
-#endif
-
-// set your board USER BUTTON pin here
+/* =========== Button Defines ============ */
 const uint8_t BUTTON_PIN = BOOT_PIN;
 const uint32_t DECOMMISSION_HOLD_MS = 5000;
 
-// ---------- SHT41 Init ----------
-Adafruit_SHT4x sht4;
-bool sht_ready = false;
+/* ======== Globals: display, QR ======== */
+SH1106Wire display(OLED_ADDR, SDA_PIN, SCL_PIN);
+QRcodeOled qrcode(&display);
+bool showingQR = false;
+uint32_t lastUi = 0;
 
-// ---------- Timers ----------
-const uint32_t SENSOR_UPDATE_MS = 120000; // 2min: sensor + Matter update
-uint32_t last_sensor_ms = 0;
+/* ============ BSEC2 ============= */
+Bsec2 env;
+bsec_virtual_sensor_t sensorList[] = {
+  BSEC_OUTPUT_IAQ,
+  BSEC_OUTPUT_CO2_EQUIVALENT,
+  BSEC_OUTPUT_BREATH_VOC_EQUIVALENT,
+  BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE,
+  BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY,
+  BSEC_OUTPUT_RAW_PRESSURE
+};
 
-// ---------- Cached readings ----------
-float g_lastTempC = 50.0f;
-float g_lastRH    = 99.0f;
+Preferences prefs;
+const char* NVS_NS = "bsec2";
+const char* NVS_KEY = "state";
+#define BSEC_STATE_SIZE 512
 
-// ---------- Utils ----------
-static inline float C_to_F(float c) { return (c * 9.0f / 5.0f) + 32.0f; }
+volatile float vTempC = NAN, vHum = NAN, vPres_hPa = NAN;
+volatile float vIAQ = NAN, vCO2eq = NAN, vVOCeq = NAN;
+volatile uint8_t vIAQacc = 0;
+// Derived values
+float vTempF = NAN, vPres_inHg = NAN, vPres_psi = NAN, vPres_hPa_sl = NAN, lastIAQ = NAN;
 
-// ---------- Battery (A0 via 1:2 divider) ----------
-static constexpr float VBAT_GAIN = 1.0123f;  // <-- Battery sense conversion factor (1.0123 for my XIAO ESP32-C6 w/ 220,000u resistors)
 
-static inline float readBatteryVoltsA0() {
-  uint32_t mv = 0;
-  for (int i = 0; i < 16; i++) {
-    uint32_t s = analogReadMilliVolts(VBAT_ADC_PIN);
-    mv += s;
-    delay(2);
-  }
-  float pin_mv = (mv / 16.0f);
-  float vA0    = pin_mv / 1000.0f;            // volts at VBAT_ADC_PIN
-  float vbat   = (vA0 * 2.0f) * VBAT_GAIN;    // undo 1:2 divider, then apply calibration
-  if (DEBUG_SERIAL) {
-    Serial.printf("VBAT_ADC pin avg: %.1f mV | v_pin=%.3f V | vbat=%.3f V\r\n",pin_mv, vA0, vbat);
-  }
-  return vbat;
-}
+/* ===== Env / units ===== */
+#define ALTITUDE_M 97.8
+#define ALTITUDE_FT 321
+#define TEMP_OFFSET_C 6.5  //Value is in Celsius
+#define USE_SEA_LEVEL_P 1
 
-static inline uint8_t voltsToPct(float v) {
-  if (v >= 4.10f) return 100;   // Values above 4.10V registers as 100%
-  if (v <= 3.00f) return 0;     // Values below 3.0 register as 0%
-
-  // 3.90–4.10 -> 80–100  (ΔV=0.20, Δ%=20, slope=100 %/V)
-  if (v >= 3.90f) return (uint8_t)lroundf(80.0f + (v - 3.90f) * 100.0f);
-
-  // 3.60–3.90 -> 40–80   (ΔV=0.30, Δ%=40, slope=133.333... %/V)
-  if (v >= 3.60f) return (uint8_t)lroundf(40.0f + (v - 3.60f) * (40.0f / 0.30f));
-
-  // 3.30–3.60 -> 10–40   (ΔV=0.30, Δ%=30, slope=100 %/V)
-  if (v >= 3.30f) return (uint8_t)lroundf(10.0f + (v - 3.30f) * (30.0f / 0.30f));
-
-  // 3.00–3.30 -> 0–10    (ΔV=0.30, Δ%=10, slope=33.333... %/V)
-  return (uint8_t)lroundf((v - 3.00f) * (10.0f / 0.30f));
-}
-
-// ---------- SHT41 ----------
-void sensors_init() {
-  Wire.begin(SDA_PIN, SCL_PIN);
-  Wire.setClock(100000); // conservative for bring-up
-
-  if (sht4.begin()) {
-    sht4.setPrecision(SHT4X_HIGH_PRECISION);
-    sht4.setHeater(SHT4X_NO_HEATER);
-    sht_ready = true;
-    Serial.println("SHT4x detected");
-  } else {
-    Serial.println("SHT4x not found on I2C!");
-  }
-}
-
-bool read_sht41(float &tempC, float &rh) {
-  if (!sht_ready) return false;
-
-  sensors_event_t hum, temp;
-  if (!sht4.getEvent(&hum, &temp)) return false;
-
-  tempC = temp.temperature;
-  rh    = hum.relative_humidity;
-  return true;
-}
-
-// -------- Sensor Update Function---------
-static void sensorUpdate() {
-  float tC, rh;
-
-  if (read_sht41(tC, rh)) {
-    g_lastTempC = tC;
-    g_lastRH    = rh;
-
-    float vbat   = readBatteryVoltsA0();
-    uint8_t bpct = voltsToPct(vbat);
-
-    TempSensor.setTemperature(tC);
-
-    uint32_t mv_to_matter = (uint32_t) lroundf(vbat * 1000.0f);
-    TempSensor.setBatteryVoltageMv(mv_to_matter);
-    TempSensor.setBatteryPercent(bpct);
-
-    HumiditySensor.setHumidity(rh);
-
-    if (DEBUG_SERIAL) {
-      Serial.print("Sensor update: ");
-      Serial.print(C_to_F(tC), 1);
-      Serial.print(" F, ");
-      Serial.print(rh, 0);
-      Serial.print(" %RH, ");
-      Serial.print(" VBAT: ");
-      Serial.print(vbat, 3);
-      Serial.print("V (");
-      Serial.print(bpct);
-      Serial.println("%)");
-    }
-  } else {
-    if (DEBUG_SERIAL) {
-      Serial.println("SHT41 sensor read failed.");
+/* ============ BSEC callback =========== */
+static void onBsecOutputs(const bme68xData d, const bsecOutputs out, Bsec2 b) {
+  for (uint8_t i = 0; i < out.nOutputs; i++) {
+    const bsecData& o = out.output[i];
+    switch (o.sensor_id) {
+      case BSEC_OUTPUT_IAQ:
+        vIAQ = o.signal;
+        vIAQacc = o.accuracy;
+        break;
+      case BSEC_OUTPUT_CO2_EQUIVALENT: vCO2eq = o.signal; break;
+      case BSEC_OUTPUT_BREATH_VOC_EQUIVALENT: vVOCeq = o.signal; break;
+      case BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE: vTempC = o.signal; break;
+      case BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY: vHum = o.signal; break;
+      case BSEC_OUTPUT_RAW_PRESSURE: vPres_hPa = o.signal; break;
     }
   }
 }
 
+/* ============ BSEC state ============ */
+void loadBsecState() {
+  if (!prefs.begin(NVS_NS, true)) return;
+  size_t n = prefs.getBytesLength(NVS_KEY);
+  if (n == BSEC_STATE_SIZE) {
+    uint8_t buf[BSEC_STATE_SIZE];
+    prefs.getBytes(NVS_KEY, buf, BSEC_STATE_SIZE);
+    if (env.setState(buf)) Serial.println("[BSEC2] state restored");
+  }
+  prefs.end();
+}
+
+void saveBsecStateIfReady(uint32_t nowMs) {
+  static const uint32_t EVERY = 5UL * 60UL * 1000UL;
+  static uint32_t last = 0;
+  if (nowMs - last < EVERY) return;
+  if (vIAQacc < 2) return;
+  uint8_t st[BSEC_STATE_SIZE];
+  if (env.getState(st) && prefs.begin(NVS_NS, false)) {
+    prefs.putBytes(NVS_KEY, st, BSEC_STATE_SIZE);
+    prefs.end();
+    last = nowMs;
+    Serial.println("[BSEC2] state saved");
+  }
+}
+/* ----------- END BSEC2 -----------------*/
+
+/* =========== Helper Functions =========== */
+void handleBootLongPress() {
+  static uint32_t t0 = 0;
+  static bool was = false;
+  bool p = (digitalRead(BOOT_BTN) == LOW);
+  if (p && !was) t0 = millis();
+  if (!p && was) t0 = 0;
+  if (p && t0 > 0 && (millis() - t0) > 3000) {
+    Serial.println("[Matter] Decommission");
+    Matter.decommission();
+    delay(300);
+    showQrOnceOnOLED();
+    showingQR = true;
+    delay(600);
+  }
+  was = p;
+}
+
+static inline void clearDisplayHard() {
+  for (int i = 0; i < 2; i++) {
+    display.clear();
+    display.display();
+    delay(5);
+  }
+}
+static inline float c_to_f(float c) {
+  return c * 9.0f / 5.0f + 32.0f;
+}
+static inline float hPa_to_inHg(float h) {
+  return h / 33.8638866667f;
+}
+static inline float hPa_to_psi(float h) {
+  return h * 0.0145037738f;
+}
+static inline float seaLevelPressure_hPa(float p_hPa, float tC, float alt_m) {
+  if (!isfinite(p_hPa) || !isfinite(tC)) return NAN;
+  float T = tC + 273.15f;
+  return p_hPa * powf(1.0f - (0.0065f * alt_m) / T, -5.257f);
+}
+static inline const char* iaqTrend(float nowVal, float prevVal, float th = 2.0f) {
+  if (!isfinite(nowVal) || !isfinite(prevVal)) return " ";
+  float d = nowVal - prevVal;
+  if (d > th) return "↑";
+  if (d < -th) return "↓";
+  return "→";
+}
+
+/* ============== Matter ============ */
+// Matter cluster / attribute IDs
+static constexpr uint32_t CL_TEMPERATURE_MEASUREMENT = 0x0402;        // MeasuredValue = 0.01 °C (int16)
+static constexpr uint32_t CL_RELATIVE_HUMIDITY_MEASUREMENT = 0x0405;  // MeasuredValue = 0.01 % (int16)
+static constexpr uint32_t CL_PRESSURE_MEASUREMENT = 0x0403;           // MeasuredValue = 0.1 kPa (int16)
+static constexpr uint32_t ATTR_MEASURED_VALUE = 0x0000;
+// Matter Endpoints
+MatterTemperatureSensor epTemp;
+MatterHumiditySensor epRH;
+MatterPressureSensor epPress;
+MatterAirQualitySensor epAir;  // CO2 + AirQuality cluster
+
+// ---------- Push sensor data into Matter endpoints ----------
+void updateMatterEndpoints() {
+  // ---- Temperature (C) ----
+  if (isfinite(vTempC)) {
+    epTemp.setTemperature((double)vTempC);
+  }
+
+  // ---- Relative Humidity (%) ----
+  if (isfinite(vHum)) {
+    epRH.setHumidity((double)vHum);
+  }
+
+  // ---- Pressure (hPa) ----
+  if (isfinite(vPres_hPa)) {
+    double p_hPa = vPres_hPa;
+    if (USE_SEA_LEVEL_P && isfinite(vTempC)) {
+      p_hPa = seaLevelPressure_hPa(vPres_hPa, vTempC, ALTITUDE_M);
+    }
+    epPress.setPressure(p_hPa);
+  }
+
+  // ---- Air Quality (CO2 ppm) ----
+  if (isfinite(vCO2eq)) {
+    epAir.setCO2((double)vCO2eq);
+  }
+}
+
+/* =========== UI + Serial ==========*/
+// ---------- UI ----------
+void computeDerived() {
+  float tC = isfinite(vTempC) ? (vTempC) : NAN;
+  vTempF = isfinite(tC) ? c_to_f(tC) : NAN;
+  float p = vPres_hPa;
+  if (USE_SEA_LEVEL_P && isfinite(p) && isfinite(tC)) {
+    p = seaLevelPressure_hPa(p, tC, ALTITUDE_M);
+    vPres_hPa_sl = p;
+  } else vPres_hPa_sl = NAN;
+  vPres_inHg = isfinite(p) ? hPa_to_inHg(p) : NAN;
+  vPres_psi = isfinite(p) ? hPa_to_psi(p) : NAN;
+}
+
+//--------- Serial Monitor --------
+void handleSerialCommands() {
+  static String cmd;
+
+  while (Serial.available()) {
+    char c = Serial.read();
+
+    if (c == '\n' || c == '\r') {
+      cmd.trim();
+      cmd.toLowerCase();
+
+      // ---- Decommission ----
+      if (cmd == "decom") {
+        Serial.println("\n[Matter] Decommission via serial");
+        Matter.decommission();
+        delay(300);
+
+        // Print fresh commissioning info
+        Serial.printf("Manual pairing code: %s\r\n",
+                      Matter.getManualPairingCode().c_str());
+        Serial.printf("QR code URL: %s\r\n",
+                      Matter.getOnboardingQRCodeUrl().c_str());
+
+        showQrOnceOnOLED();
+        showingQR = true;
+      }
+
+      // ---- Status ----
+      else if (cmd == "status") {
+        Serial.println("\n[Matter] Status");
+        Serial.printf("Commissioned: %s\r\n",
+                      Matter.isDeviceCommissioned() ? "YES" : "NO");
+
+        Serial.printf("Manual pairing code: %s\r\n",
+                      Matter.getManualPairingCode().c_str());
+        Serial.printf("QR code URL: %s\r\n",
+                      Matter.getOnboardingQRCodeUrl().c_str());
+      }
+
+      // ---- Help ----
+      else if (cmd == "help") {
+        Serial.println("\nCommands:");
+        Serial.println("  decom   - Decommission + show QR");
+        Serial.println("  status  - Show Matter status + pairing info");
+        Serial.println("  help    - This help text");
+      }
+
+      cmd = "";
+    }
+    else {
+      if (cmd.length() < 24) {
+        cmd += c;
+      }
+    }
+  }
+}
+
+void printSerial() {
+  computeDerived();
+  Serial.println(F("---- BME680 (BSEC2, US Units) ----"));
+  Serial.print(F("IAQ : "));
+  if (isnan(vIAQ)) Serial.println(F("--"));
+  else {
+    Serial.print(vIAQ, 0);
+    Serial.print(F(" (acc="));
+    Serial.print(vIAQacc);
+    Serial.println(F(")"));
+  }
+  Serial.print(F("eCO2: "));
+  if (isnan(vCO2eq)) Serial.println(F("-- ppm"));
+  else {
+    Serial.print(vCO2eq, 0);
+    Serial.println(F(" ppm"));
+  }
+  Serial.print(F("VOC : "));
+  if (isnan(vVOCeq)) Serial.println(F("-- ppm eq"));
+  else {
+    Serial.print(vVOCeq, 2);
+    Serial.println(F(" ppm eq"));
+  }
+  Serial.print(F("Temp: "));
+  if (isnan(vTempF)) Serial.println(F("-- °F"));
+  else {
+    Serial.print(vTempF, 1);
+    Serial.println(F(" °F"));
+  }
+  Serial.print(F("RH  : "));
+  if (isnan(vHum)) Serial.println(F("-- %"));
+  else {
+    Serial.print(vHum, 1);
+    Serial.println(F(" %"));
+  }
+  Serial.print(USE_SEA_LEVEL_P ? F("SLP : ") : F("Pres: "));
+  if (!isfinite(vPres_inHg)) Serial.println(F("--"));
+  else {
+    Serial.print(vPres_inHg, 3);
+    Serial.print(F(" inHg  /  "));
+    Serial.print(vPres_psi, 4);
+    Serial.println(F(" psi"));
+  }
+  Serial.print(F("Alt : "));
+  Serial.print(ALTITUDE_FT);
+  Serial.println(F(" ft (97.8 m)"));
+  Serial.println();
+}
+
+/* ========== OLED Screen ============*/
+void drawSensorScreen() {
+  computeDerived();
+  const char* trend = iaqTrend(vIAQ, lastIAQ);
+  lastIAQ = vIAQ;
+
+  display.clear();
+  String s = "IAQ ";
+  s += isnan(vIAQ) ? "--" : String(vIAQ, 0);
+  s += " (";
+  s += String(vIAQacc);
+  s += ") ";
+  s += trend;
+  display.drawString(0, 0, s);
+
+  display.drawString(88, 0, "Alt:" + String(ALTITUDE_FT) + "ft");
+
+  s = "CO2 ";
+  s += isnan(vCO2eq) ? "--" : String(vCO2eq, 0);
+  s += "  VOC ";
+  s += isnan(vVOCeq) ? "--" : String(vVOCeq, 2);
+  display.drawString(0, 12, s);
+
+  s = "T ";
+  s += isnan(vTempF) ? "--" : String(vTempF, 1);
+  s += "F  RH ";
+  s += isnan(vHum) ? "--" : String(vHum, 1);
+  s += "%";
+  display.drawString(0, 24, s);
+
+  s = USE_SEA_LEVEL_P ? "SLP " : "P ";
+  s += isnan(vPres_inHg) ? "--" : String(vPres_inHg, 3);
+  s += " inHg";
+  display.drawString(0, 36, s);
+
+  display.drawString(0, 52, "Hold BOOT 3s: Reset");
+  display.display();
+}
+
+/* ============== QR helpers ============== */
+String urlDecode(const String& s) {
+  String o;
+  o.reserve(s.length());
+  for (int i = 0; i < (int)s.length(); i++) {
+    char c = s[i];
+    if (c == '%' && i + 2 < (int)s.length()) {
+      auto hexVal = [](char h) -> int {
+        if (h >= '0' && h <= '9') return h - '0';
+        if (h >= 'A' && h <= 'F') return 10 + (h - 'A');
+        if (h >= 'a' && h <= 'f') return 10 + (h - 'a');
+        return -1;
+      };
+      int v1 = hexVal(s[i + 1]), v2 = hexVal(s[i + 2]);
+      if (v1 >= 0 && v2 >= 0) {
+        o += char((v1 << 4) | v2);
+        i += 2;
+        continue;
+      }
+    } else if (c == '+') {
+      o += ' ';
+      continue;
+    }
+    o += c;
+  }
+  return o;
+}
+String extractMtPayload(const String& urlOrPayload) {
+  int i = urlOrPayload.indexOf("data=");
+  if (i < 0) return urlOrPayload;  // maybe already "MT:..."
+  String q = urlDecode(urlOrPayload.substring(i + 5));
+  int amp = q.indexOf('&');
+  if (amp > 0) q = q.substring(0, amp);
+  return q;
+}
+void showQrOnceOnOLED() {
+  qrcode.init();
+  display.setContrast(255);
+  clearDisplayHard();
+
+  String url = Matter.getOnboardingQRCodeUrl();
+  Serial.println("[Matter] QR URL: " + url);
+  String payload = extractMtPayload(url);
+  if (payload.length() == 0) payload = url;
+  Serial.println("[Matter] QR payload: " + payload);
+
+  if (payload.length() == 0) {
+    display.drawString(0, 0, "QR unavailable");
+    display.display();
+    return;
+  }
+  qrcode.create(payload);  // draw once, no footer to avoid rolling bands
+  display.display();
+}
+
+/* ========================================== */
+/* ================== SETUP ================= */
+/* ========================================== */
 void setup() {
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   Serial.begin(115200);
   delay(200);
 
-  Serial.println("\nTiny Room Sensor (headless, Matter + SHT41)");
-  analogReadResolution(12);
-  analogSetPinAttenuation(VBAT_ADC_PIN, ADC_11db);
+  Serial.println("\nWALL-Env - BME680 Wall-Powered Sensor");
+  Wire.begin(SDA_PIN, SCL_PIN);
+  Wire.setClock(400000);
 
-  sensors_init();
+  display.init();
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
+  display.setFont(ArialMT_Plain_10);
+  display.flipScreenVertically();
+  clearDisplayHard();
+  display.drawString(0, 0, "Init BSEC2 + OLED");
+  display.display();
 
-  // Seed cache (ok if read fails; defaults remain)
-  float seedC = g_lastTempC;
-  float seedRH = g_lastRH;
-  if (read_sht41(seedC, seedRH)) {
-    g_lastTempC = seedC;
-    g_lastRH    = seedRH;
-  }
+ /* ====== BSEC2 Init ======= */
+  env.begin(BME_ADDR, Wire);
+  loadBsecState();
+  env.updateSubscription(sensorList, sizeof(sensorList) / sizeof(sensorList[0]), BSEC_SAMPLE_RATE_LP);
+  env.attachCallback(onBsecOutputs);
+  env.setTemperatureOffset(TEMP_OFFSET_C);
+
+  // --- Begin endpoints BEFORE Matter.begin() ---
+  epTemp.begin();
+  epRH.begin();
+  epPress.begin(1013.25);
+  epAir.begin(400.0);
 
   // Matter endpoints
   TempSensor.begin(g_lastTempC);   // °C
@@ -208,8 +484,12 @@ void setup() {
     Serial.println(qrUrl);
     Serial.println("Use your Matter controller to commission this device.");
     Serial.println("--------------------------------------------------");
+    showQrOnceOnOLED();
+    showingQR = true;
   } else {
     Serial.println("Device already commissioned.");
+    showingQR = false;
+    drawSensorScreen();
   }
 
   /* ============ Set Thread Polling Interval ======= */
@@ -228,54 +508,29 @@ void setup() {
     .light_sleep_enable = true
   };
   esp_pm_configure(&pm);
-
-  /* ======== Initial Power-on sensor update =====*/
-  sensorUpdate(); // 
-  if (read_sht41(tC, rh)) {
-    Serial.println("Initial Sensor Read");
-    Serial.print("Sensor update: ");
-    Serial.print(C_to_F(tC), 1);
-    Serial.print(" F, ");
-    Serial.print(rh, 0);
-    Serial.print(" %RH, ");
-    Serial.print(" VBAT: ");
-    Serial.print(vbat, 3);
-    Serial.print("V (");
-    Serial.print(bpct);
-    Serial.println("%)");
-  } 
-  else {
-    Serial.println("SHT41 sensor read failed.");
-  }
-  last_sensor_ms = millis();
+ 
+  lastUi = millis();
 }
 
 void loop() {
-  const uint32_t now = millis();
+  env.run();
+  handleBootLongPress();
+  handleSerialCommands();
 
-  // ---- Periodic sensor read + Matter update ----
-  if (now - last_sensor_ms >= SENSOR_UPDATE_MS) {
-    last_sensor_ms = now;
-    sensorUpdate();
+  // auto-exit QR mode once commissioned
+  if (showingQR && Matter.isDeviceCommissioned()) {
+    showingQR = false;
+    clearDisplayHard();
   }
-    // ---- Decommission (hold BOOT > 5s) ----
-  static bool pressed = false;
-  static uint32_t press_ts = 0;
 
-  bool btn_low = (digitalRead(BUTTON_PIN) == LOW);
-  if (btn_low && !pressed) {
-    pressed = true;
-    press_ts = now;
+  if (!showingQR && (millis() - lastUi > UI_INTERVAL_MS)) {
+    lastUi = millis();
+    printSerial();
+    drawSensorScreen();
+    updateMatterEndpoints();
   }
-  if (!btn_low && pressed) {
-    pressed = false;
-  }
-  if (pressed && (now - press_ts >= DECOMMISSION_HOLD_MS)) {
-    Serial.println("Decommissioning Matter node...");
-    Matter.decommission();
-    pressed = false;
-    press_ts = now;
-  }
+  saveBsecStateIfReady(millis());
+  
   vTaskDelay(pdMS_TO_TICKS(1000));
 
 }
