@@ -21,7 +21,7 @@
 
 #include <Matter.h>
 #include <MatterEndPoint.h>
-#include <MatterEndpoints/MatterTemperatureSensorBattery.h>
+#include <MatterAirQualitySensor.h>
 #include "esp_pm.h"
 #include "esp_openthread.h"
 #include <openthread/link.h>
@@ -37,8 +37,11 @@
 #include <WiFi.h>
 #endif
 
-/* =========== Debug Mode Switch ========*/
+/* =========== Debug Mode Switch ======== */
 static constexpr bool DEBUG_SERIAL = false;
+
+/* ========== OLED Present ============ */
+#define USE_OLED 0   // set to 1 when the screen is installed
 
 // ------------ Board Pin Defs -----------------
 #define SDA_PIN 22
@@ -49,11 +52,12 @@ static constexpr bool DEBUG_SERIAL = false;
 
 
 /* =========== Button Defines ============ */
-const uint8_t BUTTON_PIN = BOOT_PIN;
+const uint8_t BUTTON_PIN = BOOT_BTN;
 const uint32_t DECOMMISSION_HOLD_MS = 5000;
+const uint32_t UI_INTERVAL_MS = 30000;
 
 /* ======== Globals: display, QR ======== */
-SH1106Wire display(OLED_ADDR, SDA_PIN, SCL_PIN);
+SH1106Wire display(OLED_ADDR, -1, -1);
 QRcodeOled qrcode(&display);
 bool showingQR = false;
 uint32_t lastUi = 0;
@@ -133,13 +137,36 @@ void saveBsecStateIfReady(uint32_t nowMs) {
 /* ----------- END BSEC2 -----------------*/
 
 /* =========== Helper Functions =========== */
+static inline void clearDisplayHard();
+String extractMtPayload(const String& urlOrPayload);
+
+void showQrOnceOnOLED() {
+  qrcode.init();
+  display.setContrast(255);
+  clearDisplayHard();
+
+  String url = Matter.getOnboardingQRCodeUrl();
+  Serial.println("[Matter] QR URL: " + url);
+  String payload = extractMtPayload(url);
+  if (payload.length() == 0) payload = url;
+  Serial.println("[Matter] QR payload: " + payload);
+
+  if (payload.length() == 0) {
+    display.drawString(0, 0, "QR unavailable");
+    display.display();
+    return;
+  }
+  qrcode.create(payload);  // draw once, no footer to avoid rolling bands
+  display.display();
+}
+
 void handleBootLongPress() {
   static uint32_t t0 = 0;
   static bool was = false;
   bool p = (digitalRead(BOOT_BTN) == LOW);
   if (p && !was) t0 = millis();
   if (!p && was) t0 = 0;
-  if (p && t0 > 0 && (millis() - t0) > 3000) {
+  if (p && t0 > 0 && (millis() - t0) > DECOMMISSION_HOLD_MS) {
     Serial.println("[Matter] Decommission");
     Matter.decommission();
     delay(300);
@@ -185,6 +212,7 @@ static constexpr uint32_t CL_TEMPERATURE_MEASUREMENT = 0x0402;        // Measure
 static constexpr uint32_t CL_RELATIVE_HUMIDITY_MEASUREMENT = 0x0405;  // MeasuredValue = 0.01 % (int16)
 static constexpr uint32_t CL_PRESSURE_MEASUREMENT = 0x0403;           // MeasuredValue = 0.1 kPa (int16)
 static constexpr uint32_t ATTR_MEASURED_VALUE = 0x0000;
+
 // Matter Endpoints
 MatterTemperatureSensor epTemp;
 MatterHumiditySensor epRH;
@@ -412,29 +440,12 @@ String extractMtPayload(const String& urlOrPayload) {
   if (amp > 0) q = q.substring(0, amp);
   return q;
 }
-void showQrOnceOnOLED() {
-  qrcode.init();
-  display.setContrast(255);
-  clearDisplayHard();
 
-  String url = Matter.getOnboardingQRCodeUrl();
-  Serial.println("[Matter] QR URL: " + url);
-  String payload = extractMtPayload(url);
-  if (payload.length() == 0) payload = url;
-  Serial.println("[Matter] QR payload: " + payload);
-
-  if (payload.length() == 0) {
-    display.drawString(0, 0, "QR unavailable");
-    display.display();
-    return;
-  }
-  qrcode.create(payload);  // draw once, no footer to avoid rolling bands
-  display.display();
-}
 
 /* ========================================== */
 /* ================== SETUP ================= */
 /* ========================================== */
+
 void setup() {
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   Serial.begin(115200);
@@ -453,21 +464,17 @@ void setup() {
   display.display();
 
  /* ====== BSEC2 Init ======= */
-  env.begin(BME_ADDR, Wire);
+  env.begin(BME_ADDR, Wire, bme68xDelayUs);
   loadBsecState();
   env.updateSubscription(sensorList, sizeof(sensorList) / sizeof(sensorList[0]), BSEC_SAMPLE_RATE_LP);
   env.attachCallback(onBsecOutputs);
   env.setTemperatureOffset(TEMP_OFFSET_C);
 
   // --- Begin endpoints BEFORE Matter.begin() ---
-  epTemp.begin();
-  epRH.begin();
+  epTemp.begin(0.0);
+  epRH.begin(0.0);
   epPress.begin(1013.25);
-  epAir.begin(400.0);
-
-  // Matter endpoints
-  TempSensor.begin(g_lastTempC);   // °C
-  HumiditySensor.begin(g_lastRH);
+  epAir.begin(100.0);
 
   Matter.begin();
   
@@ -491,23 +498,6 @@ void setup() {
     showingQR = false;
     drawSensorScreen();
   }
-
-  /* ============ Set Thread Polling Interval ======= */
-  otInstance *ot = esp_openthread_get_instance();
-  if (ot) {
-    otLinkSetPollPeriod(ot, 5000); // 5s to start; try 10s if you can tolerate latency
-    Serial.println("Set OT poll period to 10000ms");
-  }
-
-  /* ==== Power Saving Features Enable ==== */
-  setCpuFrequencyMhz(80);     // Reduce CPU freq (optional but usually helpful)
-
-  esp_pm_config_t pm = {      // Enable dynamic freq scaling + automatic light sleep when idle
-    .max_freq_mhz = 80,
-    .min_freq_mhz = 40,
-    .light_sleep_enable = true
-  };
-  esp_pm_configure(&pm);
  
   lastUi = millis();
 }
@@ -531,6 +521,6 @@ void loop() {
   }
   saveBsecStateIfReady(millis());
   
-  vTaskDelay(pdMS_TO_TICKS(1000));
+  vTaskDelay(pdMS_TO_TICKS(500));
 
 }
