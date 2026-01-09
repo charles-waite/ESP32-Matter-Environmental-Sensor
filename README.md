@@ -89,6 +89,7 @@ Connect the BME680 (and optional OLED) to the XIAO ESP32-C6 over I²C:
 
 ## 🧠 Future Enhancements
 
+- Implement proper Device ID (https://developers.home.google.com/matter/supported-devices#table-supported-devices).
 - Ambient light sensor integration for display dimming  
 - Expanded Matter cluster support (e.g., VOC index, CO₂, etc.)
 - external button(s) to trigger interactions like Wake OLED on press, Matter decommissioning, display mode, etc.
