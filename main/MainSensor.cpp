@@ -24,13 +24,19 @@
 #include <MatterAirQualitySensor.h>
 #include "esp_pm.h"
 #include "esp_openthread.h"
+#include "esp_matter_attribute_utils.h"
 #include <openthread/link.h>
+#include <openthread/thread.h>
+#include <openthread/thread_ftd.h>
+#include <app-common/zap-generated/ids/Clusters.h>
+#include <app-common/zap-generated/ids/Attributes.h>
 #include <Wire.h>
 #include <bsec2.h>
 #include <SH1106Wire.h>
 #include <qrcodeoled.h>
 #include <Preferences.h>
 #include <math.h>
+#include <string.h>
 
 #if !CONFIG_ENABLE_CHIPOBLE
 // if the device can be commissioned using BLE, WiFi is not used - save flash space
@@ -61,6 +67,7 @@ SH1106Wire display(OLED_ADDR, -1, -1);
 QRcodeOled qrcode(&display);
 bool showingQR = false;
 uint32_t lastUi = 0;
+static bool oledPresent = false;
 
 /* ============ BSEC2 ============= */
 Bsec2 env;
@@ -139,8 +146,41 @@ void saveBsecStateIfReady(uint32_t nowMs) {
 /* =========== Helper Functions =========== */
 static inline void clearDisplayHard();
 String extractMtPayload(const String& urlOrPayload);
+static bool detectOled();
+static void setDefaultNodeLabel();
+
+static void configureThreadRouterEligibility() {
+#if CONFIG_ENABLE_MATTER_OVER_THREAD && CONFIG_OPENTHREAD_ENABLED
+  otInstance* instance = esp_openthread_get_instance();
+  if (!instance) return;
+
+  otLinkModeConfig mode = otThreadGetLinkMode(instance);
+  mode.mRxOnWhenIdle = true;
+  mode.mDeviceType = true;
+  mode.mNetworkData = true;
+  otThreadSetLinkMode(instance, mode);
+  otThreadSetRouterEligible(instance, true);
+#endif
+}
+
+static void setDefaultNodeLabel() {
+  static constexpr char kDefaultNodeLabel[] = "WALL-Env Sensor";
+  char current[esp_matter::cluster::basic_information::k_max_node_label_length + 1] = {};
+  esp_err_t err = esp_matter::attribute::get_val_raw(
+      0, chip::app::Clusters::BasicInformation::Id,
+      chip::app::Clusters::BasicInformation::Attributes::NodeLabel::Id,
+      reinterpret_cast<uint8_t*>(current), sizeof(current));
+  if (err == ESP_OK && current[0] != '\0') return;
+
+  esp_matter_attr_val_t val =
+      esp_matter_char_str(const_cast<char*>(kDefaultNodeLabel), strlen(kDefaultNodeLabel));
+  esp_matter::attribute::update(
+      0, chip::app::Clusters::BasicInformation::Id,
+      chip::app::Clusters::BasicInformation::Attributes::NodeLabel::Id, &val);
+}
 
 void showQrOnceOnOLED() {
+  if (!oledPresent) return;
   qrcode.init();
   display.setContrast(255);
   clearDisplayHard();
@@ -171,13 +211,14 @@ void handleBootLongPress() {
     Matter.decommission();
     delay(300);
     showQrOnceOnOLED();
-    showingQR = true;
+    showingQR = oledPresent;
     delay(600);
   }
   was = p;
 }
 
 static inline void clearDisplayHard() {
+  if (!oledPresent) return;
   for (int i = 0; i < 2; i++) {
     display.clear();
     display.display();
@@ -204,6 +245,17 @@ static inline const char* iaqTrend(float nowVal, float prevVal, float th = 2.0f)
   if (d > th) return "↑";
   if (d < -th) return "↓";
   return "→";
+}
+
+static const char* threadRoleName(otDeviceRole role) {
+  switch (role) {
+    case OT_DEVICE_ROLE_DISABLED: return "disabled";
+    case OT_DEVICE_ROLE_DETACHED: return "detached";
+    case OT_DEVICE_ROLE_CHILD: return "child";
+    case OT_DEVICE_ROLE_ROUTER: return "router";
+    case OT_DEVICE_ROLE_LEADER: return "leader";
+    default: return "unknown";
+  }
 }
 
 /* ============== Matter ============ */
@@ -363,11 +415,21 @@ void printSerial() {
   Serial.print(F("Alt : "));
   Serial.print(ALTITUDE_FT);
   Serial.println(F(" ft (97.8 m)"));
+#if CONFIG_ENABLE_MATTER_OVER_THREAD && CONFIG_OPENTHREAD_ENABLED
+  otInstance* instance = esp_openthread_get_instance();
+  if (instance) {
+    Serial.print(F("Thread: "));
+    Serial.print(threadRoleName(otThreadGetDeviceRole(instance)));
+    Serial.print(F(", routerEligible="));
+    Serial.println(otThreadIsRouterEligible(instance) ? F("YES") : F("NO"));
+  }
+#endif
   Serial.println();
 }
 
 /* ========== OLED Screen ============*/
 void drawSensorScreen() {
+  if (!oledPresent) return;
   computeDerived();
   const char* trend = iaqTrend(vIAQ, lastIAQ);
   lastIAQ = vIAQ;
@@ -441,6 +503,11 @@ String extractMtPayload(const String& urlOrPayload) {
   return q;
 }
 
+static bool detectOled() {
+  Wire.beginTransmission(OLED_ADDR);
+  return Wire.endTransmission() == 0;
+}
+
 
 /* ========================================== */
 /* ================== SETUP ================= */
@@ -455,13 +522,21 @@ void setup() {
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(400000);
 
-  display.init();
-  display.setTextAlignment(TEXT_ALIGN_LEFT);
-  display.setFont(ArialMT_Plain_10);
-  display.flipScreenVertically();
-  clearDisplayHard();
-  display.drawString(0, 0, "Init BSEC2 + OLED");
-  display.display();
+  if (USE_OLED) {
+    if (detectOled()) {
+      oledPresent = true;
+      display.init();
+      display.setTextAlignment(TEXT_ALIGN_LEFT);
+      display.setFont(ArialMT_Plain_10);
+      display.flipScreenVertically();
+      clearDisplayHard();
+      display.drawString(0, 0, "Init BSEC2 + OLED");
+      display.display();
+    } else {
+      Serial.println("OLED display not detected. Disabling display output.");
+      oledPresent = false;
+    }
+  }
 
  /* ====== BSEC2 Init ======= */
   env.begin(BME_ADDR, Wire, bme68xDelayUs);
@@ -477,6 +552,8 @@ void setup() {
   epAir.begin(100.0);
 
   Matter.begin();
+  configureThreadRouterEligibility();
+  setDefaultNodeLabel();
   
   // Commission if needed (info via Serial)
   if (!Matter.isDeviceCommissioned()) {
@@ -492,7 +569,7 @@ void setup() {
     Serial.println("Use your Matter controller to commission this device.");
     Serial.println("--------------------------------------------------");
     showQrOnceOnOLED();
-    showingQR = true;
+    showingQR = oledPresent;
   } else {
     Serial.println("Device already commissioned.");
     showingQR = false;
