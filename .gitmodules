@@ -1,3 +1,0 @@
-[submodule "components/matter_time_sync"]
-	path = components/matter_time_sync
-	url = https://github.com/charles-waite/Matter-Time-Sync-lib

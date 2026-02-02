@@ -8,5 +8,4 @@ idf_component_register(
     oled_ssd1306_tp
     qrcodeoled
     esp32_matter_extra_endpoints
-    matter_time_sync
 )

@@ -434,7 +434,7 @@ dependencies:
     version: 1.2.0
   espressif/esp_secure_cert_mgr:
     component_hash: 
-      29248e402b2014394228b289a3c02fdb1dc43168ef18fc83449a868dfbc2341f
+      e8ce8d5ac0ef4ef5df12fdb266190413c4170ad39b394435f0e3115a4fddc6a6
     dependencies:
     - name: idf
       require: private
@@ -442,7 +442,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 2.8.0
+    version: 2.7.2
   espressif/jsmn:
     component_hash: 
       d80350c41bbaa827c98a25b6072df00884e72f54885996fab4a4f0aebce6b6c3
@@ -478,7 +478,7 @@ dependencies:
     version: 1.0.3
   espressif/libsodium:
     component_hash: 
-      6ee084dee7a4d664498274870aa65391c9ec9d38dcdb34d2ad2b8518726f8b5e
+      25b968723c584a2742ca36cebe5a7ef049c6767e059f7b1e1eec69946019025d
     dependencies:
     - name: idf
       require: private
@@ -486,7 +486,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 1.0.20~3
+    version: 1.0.20~2
   espressif/mdns:
     component_hash: 
       29e47564b1a7ee778135e17fbbf2a2773f71c97ebabfe626c8eda7c958a7ad16
@@ -531,7 +531,7 @@ dependencies:
     version: 5.5.2
   joltwallet/littlefs:
     component_hash: 
-      dcea25bcef2de023f089f5f01e8d8c46ad1b8ffef75861ad5ffb4098555839df
+      1808d73e99168f6f3c26dd31799a248484762b3a320ec4962dec11a145f4277f
     dependencies:
     - name: idf
       require: private
@@ -539,10 +539,10 @@ dependencies:
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 1.20.4
+    version: 1.20.3
 direct_dependencies:
 - espressif/arduino-esp32
 - espressif/esp_matter
-manifest_hash: 2acbf548f37b0ac402a0f4210175d4307636248ecfa2d6bda65a1c86d42e6ab0
+manifest_hash: ac5497a36af964bbb54472d25d87d4d84a0e7a81e0c68b8a4637bce602ac4a73
 target: esp32c6
 version: 2.0.0
