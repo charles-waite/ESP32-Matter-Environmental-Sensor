@@ -114,7 +114,7 @@ bool MatterAirQualitySensor::begin(uint16_t _rawCO2)
     cluster::air_quality::config_t aq_config;
     cluster_t *clusteraq = cluster::air_quality::create(endpoint, &aq_config, CLUSTER_FLAG_SERVER);
     
-    attribute::create(clusteraq, AirQuality::Attributes::AirQuality::Id, ATTRIBUTE_FLAG_NULLABLE, esp_matter_enum8(1)); // AirQuality = 1 (z. B. Fair)
+    attribute::create(clusteraq, AirQuality::Attributes::AirQuality::Id, ATTRIBUTE_FLAG_NULLABLE, esp_matter_enum8(0)); // Unknown
     
 
     started = true;
@@ -159,40 +159,38 @@ bool MatterAirQualitySensor::setRawCO2(uint16_t _rawCO2)
     rawCO2 = _rawCO2;
     log_v("CO2 Sensor set to %.02f PPM", newValue);
 
+    return true;
+}
+
+bool MatterAirQualitySensor::setAirQualityEnum(uint8_t quality)
+{
+    if (!started)
+    {
+        log_e("Matter CO2 Sensor device has not begun.");
+        return false;
+    }
+
+    if (rawaq == quality)
+    {
+        return true;
+    }
+
     esp_matter_attr_val_t attrValAQ = esp_matter_invalid(NULL);
     if (!getAttributeVal(AirQuality::Id, AirQuality::Attributes::AirQuality::Id, &attrValAQ))
     {
         log_e("AirQuality attribute not found");
         return false;
     }
-    int enumaq;
 
-    if (_rawCO2 <= 800)
+    attrValAQ = esp_matter_enum8(quality);
+    if (!updateAttributeVal(AirQuality::Id, AirQuality::Attributes::AirQuality::Id, &attrValAQ))
     {
-        enumaq = 1; // Excellent
-    }
-    else if (_rawCO2 <= 1000)
-    {
-        enumaq = 2; // Good
-    }
-    else if (_rawCO2 <= 1500)
-    {
-        enumaq = 3; // Fair
-    }
-    else if (_rawCO2 <= 2000)
-    {
-        enumaq = 4; // Inferior
-    }
-    else
-    {
-        enumaq = 4; // Poor
+        log_e("Failed to update AirQuality attribute.");
+        return false;
     }
 
-    attrValAQ = esp_matter_enum8(enumaq);
-    updateAttributeVal(AirQuality::Id, AirQuality::Attributes::AirQuality::Id, &attrValAQ);
-    rawaq = enumaq;
-    log_v("Air Quality Sensor set to mode %d", attrValAQ);
-
+    rawaq = quality;
+    log_v("Air Quality Sensor set to enum %u", quality);
     return true;
 }
 

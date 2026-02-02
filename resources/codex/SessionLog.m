@@ -17,3 +17,6 @@ Entries
 - Added numeric device software/hardware version defaults derived from chip_project_config.h.
 - Added a default Matter NodeLabel to set a friendly device name on first commission.
 - Synced CHIP project config defaults into sdkconfig; removed sdkconfig.defaults.lit (not used in this repo).
+- Switched BSEC subscription to static IAQ and mapped s-IAQ to Matter AirQuality enum via a dedicated setter (CO2 no longer drives AirQuality).
+- Reworked OLED UI layout: large temp/RH line, sIAQ label+value, CO2 only, and pressure with trend arrow; added sIAQ label mapping and removed boot hint.
+- Updated sIAQ label strings to match Matter AirQuality enum wording (Very Poor / Extremely Poor).

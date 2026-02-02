@@ -66,6 +66,8 @@ public:
     {
         return (double)rawaq;
     }
+
+    bool setAirQualityEnum(uint8_t quality);
     
     protected:
     bool started = false;

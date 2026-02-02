@@ -73,7 +73,7 @@ static bool oledPresent = false;
 /* ============ BSEC2 ============= */
 Bsec2 env;
 bsec_virtual_sensor_t sensorList[] = {
-  BSEC_OUTPUT_IAQ,
+  BSEC_OUTPUT_STATIC_IAQ,
   BSEC_OUTPUT_CO2_EQUIVALENT,
   BSEC_OUTPUT_BREATH_VOC_EQUIVALENT,
   BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE,
@@ -90,7 +90,7 @@ volatile float vTempC = NAN, vHum = NAN, vPres_hPa = NAN;
 volatile float vIAQ = NAN, vCO2eq = NAN, vVOCeq = NAN;
 volatile uint8_t vIAQacc = 0;
 // Derived values
-float vTempF = NAN, vPres_inHg = NAN, vPres_psi = NAN, vPres_hPa_sl = NAN, lastIAQ = NAN;
+float vTempF = NAN, vPres_inHg = NAN, vPres_psi = NAN, vPres_hPa_sl = NAN, lastPres_inHg = NAN;
 
 
 /* ===== Env / units ===== */
@@ -104,7 +104,7 @@ static void onBsecOutputs(const bme68xData d, const bsecOutputs out, Bsec2 b) {
   for (uint8_t i = 0; i < out.nOutputs; i++) {
     const bsecData& o = out.output[i];
     switch (o.sensor_id) {
-      case BSEC_OUTPUT_IAQ:
+      case BSEC_OUTPUT_STATIC_IAQ:
         vIAQ = o.signal;
         vIAQacc = o.accuracy;
         break;
@@ -250,6 +250,16 @@ static inline const char* iaqTrend(float nowVal, float prevVal, float th = 2.0f)
   return "→";
 }
 
+static const char* sIaqLabel(float sIaq) {
+  if (!isfinite(sIaq)) return "Unknown";
+  if (sIaq <= 50.0f) return "Good";
+  if (sIaq <= 100.0f) return "Fair";
+  if (sIaq <= 150.0f) return "Moderate";
+  if (sIaq <= 200.0f) return "Poor";
+  if (sIaq <= 250.0f) return "Very Poor";
+  return "Extremely Poor";
+}
+
 static const char* threadRoleName(otDeviceRole role) {
   switch (role) {
     case OT_DEVICE_ROLE_DISABLED: return "disabled";
@@ -259,6 +269,25 @@ static const char* threadRoleName(otDeviceRole role) {
     case OT_DEVICE_ROLE_LEADER: return "leader";
     default: return "unknown";
   }
+}
+
+// Matter AirQuality::AirQualityEnum (spec v1.2)
+static constexpr uint8_t AIR_QUALITY_UNKNOWN = 0;
+static constexpr uint8_t AIR_QUALITY_GOOD = 1;
+static constexpr uint8_t AIR_QUALITY_FAIR = 2;
+static constexpr uint8_t AIR_QUALITY_MODERATE = 3;
+static constexpr uint8_t AIR_QUALITY_POOR = 4;
+static constexpr uint8_t AIR_QUALITY_VERY_POOR = 5;
+static constexpr uint8_t AIR_QUALITY_EXTREMELY_POOR = 6;
+
+static uint8_t mapStaticIaqToAirQuality(float sIaq) {
+  if (!isfinite(sIaq)) return AIR_QUALITY_UNKNOWN;
+  if (sIaq <= 50.0f) return AIR_QUALITY_GOOD;            // Excellent
+  if (sIaq <= 100.0f) return AIR_QUALITY_FAIR;           // Good
+  if (sIaq <= 150.0f) return AIR_QUALITY_MODERATE;       // Lightly polluted
+  if (sIaq <= 200.0f) return AIR_QUALITY_POOR;           // Moderately polluted
+  if (sIaq <= 250.0f) return AIR_QUALITY_VERY_POOR;      // Heavily polluted
+  return AIR_QUALITY_EXTREMELY_POOR;                    // Severely / Extremely polluted
 }
 
 /* ============== Matter ============ */
@@ -299,6 +328,10 @@ void updateMatterEndpoints() {
   if (isfinite(vCO2eq)) {
     epAir.setCO2((double)vCO2eq);
   }
+
+  // ---- Air Quality (s-IAQ enum) ----
+  uint8_t aq = (vIAQacc >= 2) ? mapStaticIaqToAirQuality(vIAQ) : AIR_QUALITY_UNKNOWN;
+  epAir.setAirQualityEnum(aq);
 }
 
 /* =========== UI + Serial ==========*/
@@ -375,7 +408,7 @@ void handleSerialCommands() {
 void printSerial() {
   computeDerived();
   Serial.println(F("---- BME680 (BSEC2, US Units) ----"));
-  Serial.print(F("IAQ : "));
+  Serial.print(F("sIAQ: "));
   if (isnan(vIAQ)) Serial.println(F("--"));
   else {
     Serial.print(vIAQ, 0);
@@ -434,39 +467,37 @@ void printSerial() {
 void drawSensorScreen() {
   if (!oledPresent) return;
   computeDerived();
-  const char* trend = iaqTrend(vIAQ, lastIAQ);
-  lastIAQ = vIAQ;
+  const char* pTrend = iaqTrend(vPres_inHg, lastPres_inHg, 0.02f);
+  lastPres_inHg = vPres_inHg;
 
   display.clear();
   display.setTextAlignment(TEXT_ALIGN_LEFT);
-  display.setFont(ArialMT_Plain_10);
-  String s = "IAQ ";
-  s += isnan(vIAQ) ? "--" : String(vIAQ, 0);
-  s += " (";
-  s += String(vIAQacc);
-  s += ") ";
-  s += trend;
+  display.setFont(ArialMT_Plain_16);
+  String s = " ";
+  s += isnan(vTempF) ? "--" : String(vTempF, 1);
+  s += "F     ";
+  s += isnan(vHum) ? "--" : String(vHum, 0);
+  s += "% RH";
   display.drawString(0, 0, s);
 
-  s = "CO2 ";
+  display.setFont(ArialMT_Plain_10);
+  s = " IAQ: ";
+  s += sIaqLabel(vIAQ);
+  s += " (";
+  s += isnan(vIAQ) ? "--" : String(vIAQ, 0);
+  s += ")";
+  display.drawString(0, 18, s);
+
+  s = " CO2: ";
   s += isnan(vCO2eq) ? "--" : String(vCO2eq, 0);
-  s += "  VOC ";
-  s += isnan(vVOCeq) ? "--" : String(vVOCeq, 2);
-  display.drawString(0, 12, s);
+  s += "ppm";
+  display.drawString(0, 30, s);
 
-  s = "T ";
-  s += isnan(vTempF) ? "--" : String(vTempF, 1);
-  s += "F  RH ";
-  s += isnan(vHum) ? "--" : String(vHum, 1);
-  s += "%";
-  display.drawString(0, 24, s);
-
-  s = USE_SEA_LEVEL_P ? "SLP " : "P ";
-  s += isnan(vPres_inHg) ? "--" : String(vPres_inHg, 3);
-  s += " inHg";
-  display.drawString(0, 36, s);
-
-  display.drawString(0, 52, "Hold BOOT 3s: Reset");
+  s = " Pressure: ";
+  s += isnan(vPres_inHg) ? "--" : String(vPres_inHg, 2);
+  s += "inHg ";
+  s += pTrend;
+  display.drawString(0, 42, s);
   display.display();
 }
 
