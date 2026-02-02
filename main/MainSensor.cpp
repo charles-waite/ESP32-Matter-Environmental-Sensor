@@ -30,16 +30,13 @@
 #include <openthread/thread_ftd.h>
 #include <app-common/zap-generated/ids/Clusters.h>
 #include <app-common/zap-generated/ids/Attributes.h>
-#include <app/clusters/time-synchronization-server/time-synchronization-server.h>
-#include <esp_matter_cluster.h>
-#include <esp_matter_endpoint.h>
-#include <system/SystemClock.h>
 #include <Wire.h>
 #include <bsec2.h>
 #define SH1106_COL_OFFSET 2
 #include <SH1106Wire.h>
 #include <qrcodeoled.h>
 #include "kirby.h"
+#include "time_sync_manager.h"
 #include <Preferences.h>
 #include <math.h>
 #include <string.h>
@@ -80,7 +77,6 @@ uint32_t lastBrightnessCheck = 0;
 bool showKirby = false;
 static bool oledPresent = false;
 static bool oledDimmed = false;
-static bool timeSyncClusterReady = false;
 static bool timeSyncLogged = false;
 
 /* ============ BSEC2 ============= */
@@ -166,7 +162,7 @@ static void showOledBootScreen();
 static void showOledCalibration();    //-- FOR DEBUG ONLY --
 static void drawKirbyScreen();
 static void updateOledBrightness();
-static void initTimeSyncCluster();
+static void onTimeSyncReady(int64_t utc_sec);
 
 static void configureThreadRouterEligibility() {
 #if CONFIG_ENABLE_MATTER_OVER_THREAD && CONFIG_OPENTHREAD_ENABLED
@@ -328,13 +324,6 @@ static bool isDstPacific(int y, int m, int d, int hour) {
   return hour < 2;
 }
 
-static bool getUnixTimeSeconds(int64_t &outSec) {
-  chip::System::Clock::Microseconds64 utc;
-  if (chip::System::SystemClock().GetClock_RealTime(utc) != CHIP_NO_ERROR) return false;
-  outSec = static_cast<int64_t>(utc.count() / 1000000);
-  return true;
-}
-
 static bool computeSunTimes(int y, int m, int d, float lat, float lon, float tzHours,
                             float &sunriseMin, float &sunsetMin) {
   const float zenith = 90.833f;
@@ -376,9 +365,16 @@ static bool computeSunTimes(int y, int m, int d, float lat, float lon, float tzH
   return isfinite(sunriseMin) && isfinite(sunsetMin);
 }
 
+static void onTimeSyncReady(int64_t utc_sec) {
+  (void)utc_sec;
+  if (timeSyncLogged) return;
+  Serial.println(F("[Time] Sync successful"));
+  timeSyncLogged = true;
+}
+
 static void printTimeDebug() {
   int64_t utcSec = 0;
-  if (!getUnixTimeSeconds(utcSec)) {
+  if (!time_sync_now_utc(&utcSec)) {
     Serial.println(F("Local: --:--:-- PST"));
     Serial.println(F("UTC  : --:--:--"));
     Serial.println(F("Next : --"));
@@ -716,25 +712,10 @@ static void drawKirbyScreen() {
   display.display();
 }
 
-static void initTimeSyncCluster() {
-  esp_matter::node_t *node = esp_matter::node::get();
-  if (!node) return;
-  esp_matter::endpoint_t *root = esp_matter::endpoint::get(node, 0);
-  if (!root) return;
-
-  esp_matter::cluster::time_synchronization::config_t cfg;
-  esp_matter::cluster_t *cluster = esp_matter::cluster::time_synchronization::create(root, &cfg, CLUSTER_FLAG_SERVER);
-  timeSyncClusterReady = (cluster != nullptr);
-}
-
 static void updateOledBrightness() {
-  if (!oledPresent || !timeSyncClusterReady) return;
+  if (!oledPresent) return;
   int64_t utcSec = 0;
-  if (!getUnixTimeSeconds(utcSec)) return;
-  if (!timeSyncLogged) {
-    Serial.println(F("[Time] Sync successful"));
-    timeSyncLogged = true;
-  }
+  if (!time_sync_now_utc(&utcSec)) return;
 
   const float lat = 47.669f;
   const float lon = -122.347f;
@@ -894,7 +875,8 @@ void setup() {
   epRH.begin(0.0);
   epPress.begin(1013.25);
   epAir.begin(100.0);
-  initTimeSyncCluster();
+  time_sync_set_ready_callback(onTimeSyncReady);
+  time_sync_init();
 
   Matter.begin();
   configureThreadRouterEligibility();
@@ -928,6 +910,7 @@ void loop() {
   env.run();
   handleBootLongPress();
   handleSerialCommands();
+  time_sync_poll();
 
   // auto-exit QR mode once commissioned
   if (showingQR && Matter.isDeviceCommissioned()) {

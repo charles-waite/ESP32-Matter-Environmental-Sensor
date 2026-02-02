@@ -26,3 +26,4 @@ Entries
 - Added serial time debug lines (local PST label, UTC, and time until next sunrise/sunset).
 - Added one-time serial log when Time Sync becomes available.
 - Enabled CONFIG_ENABLE_SNTP_TIME_SYNC in sdkconfig.defaults so Matter can read real-time clock without Wi-Fi.
+- Refactored Matter Time Sync usage to the Matter-Time-Sync-lib submodule (components/matter_time_sync).
