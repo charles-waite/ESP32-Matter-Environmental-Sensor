@@ -46,6 +46,10 @@
 #define SH1106_PUMP_OFF 0X8A
 //--------------------------------------
 
+#ifndef SH1106_COL_OFFSET
+#define SH1106_COL_OFFSET 2
+#endif
+
 class SH1106Wire : public OLEDDisplay {
   private:
       uint8_t             _address;
@@ -133,8 +137,8 @@ class SH1106Wire : public OLEDDisplay {
         if (minBoundY == UINT8_MAX) return;
 
         // Calculate the colum offset
-        uint8_t minBoundXp2H = (minBoundX + 2) & 0x0F;
-        uint8_t minBoundXp2L = 0x10 | ((minBoundX + 2) >> 4 );
+        uint8_t minBoundXp2H = (minBoundX + SH1106_COL_OFFSET) & 0x0F;
+        uint8_t minBoundXp2L = 0x10 | ((minBoundX + SH1106_COL_OFFSET) >> 4 );
 
         uint8_t k = 0;
         for (y = minBoundY; y <= maxBoundY; y++) {
@@ -167,7 +171,7 @@ class SH1106Wire : public OLEDDisplay {
         uint8_t * p = &buffer[0];
         for (uint8_t y=0; y<8; y++) {
           sendCommand(0xB0+y);
-          sendCommand(0x02);
+          sendCommand(0x00 + SH1106_COL_OFFSET);
           sendCommand(0x10);
           for( uint8_t x=0; x<(128/I2C_OLED_TRANSFER_BYTE); x++) {
             _wire->beginTransmission(_address);

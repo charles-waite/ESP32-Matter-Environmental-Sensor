@@ -32,6 +32,7 @@
 #include <app-common/zap-generated/ids/Attributes.h>
 #include <Wire.h>
 #include <bsec2.h>
+#define SH1106_COL_OFFSET 2
 #include <SH1106Wire.h>
 #include <qrcodeoled.h>
 #include <Preferences.h>
@@ -47,7 +48,7 @@
 static constexpr bool DEBUG_SERIAL = false;
 
 /* ========== OLED Present ============ */
-#define USE_OLED 0   // set to 1 when the screen is installed
+#define USE_OLED 1   // set to 1 when the screen is installed
 
 // ------------ Board Pin Defs -----------------
 #define SDA_PIN 22
@@ -148,6 +149,8 @@ static inline void clearDisplayHard();
 String extractMtPayload(const String& urlOrPayload);
 static bool detectOled();
 static void setDefaultNodeLabel();
+static void showOledBootScreen();
+static void showOledCalibration();    //-- FOR DEBUG ONLY --
 
 static void configureThreadRouterEligibility() {
 #if CONFIG_ENABLE_MATTER_OVER_THREAD && CONFIG_OPENTHREAD_ENABLED
@@ -435,6 +438,8 @@ void drawSensorScreen() {
   lastIAQ = vIAQ;
 
   display.clear();
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
+  display.setFont(ArialMT_Plain_10);
   String s = "IAQ ";
   s += isnan(vIAQ) ? "--" : String(vIAQ, 0);
   s += " (";
@@ -442,8 +447,6 @@ void drawSensorScreen() {
   s += ") ";
   s += trend;
   display.drawString(0, 0, s);
-
-  display.drawString(88, 0, "Alt:" + String(ALTITUDE_FT) + "ft");
 
   s = "CO2 ";
   s += isnan(vCO2eq) ? "--" : String(vCO2eq, 0);
@@ -508,6 +511,44 @@ static bool detectOled() {
   return Wire.endTransmission() == 0;
 }
 
+static void showOledBootScreen() {
+  if (!oledPresent) return;
+  const char* line1 = "WALL-Env Snsr";
+  const char* line2 = "by Waite Design Labs";
+  display.clear();
+  display.setTextAlignment(TEXT_ALIGN_CENTER);
+  display.setFont(ArialMT_Plain_16);
+  int h1 = 16;
+  display.setFont(ArialMT_Plain_10);
+  int h2 = 10;
+  int gap = 2;
+  int total = h1 + gap + h2;
+  int y0 = (display.getHeight() - total) / 2;
+  display.setFont(ArialMT_Plain_16);
+  display.drawString(display.getWidth() / 2, y0, line1);
+  display.setFont(ArialMT_Plain_10);
+  display.drawString(display.getWidth() / 2, y0 + h1 + gap, line2);
+  display.display();
+  delay(5000);
+}
+
+static void showOledCalibration() {
+  if (!oledPresent) return;
+  int w = display.getWidth();
+  int h = display.getHeight();
+  display.clear();
+  display.drawRect(0, 0, w, h);
+  display.drawLine(0, 0, 0, h - 1);
+  display.drawLine(w - 1, 0, w - 1, h - 1);
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
+  display.setFont(ArialMT_Plain_10);
+  display.drawString(0, 0, "0");
+  display.setTextAlignment(TEXT_ALIGN_RIGHT);
+  display.drawString(w - 1, 0, String(w - 1));
+  display.display();
+  delay(3000);
+}
+
 
 /* ========================================== */
 /* ================== SETUP ================= */
@@ -532,6 +573,8 @@ void setup() {
       clearDisplayHard();
       display.drawString(0, 0, "Init BSEC2 + OLED");
       display.display();
+      //showOledCalibration();
+      showOledBootScreen();
     } else {
       Serial.println("OLED display not detected. Disabling display output.");
       oledPresent = false;
