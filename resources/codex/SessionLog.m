@@ -27,6 +27,3 @@ Entries
 - Added one-time serial log when Time Sync becomes available.
 - Enabled CONFIG_ENABLE_SNTP_TIME_SYNC in sdkconfig.defaults so Matter can read real-time clock without Wi-Fi.
 - Refactored Matter Time Sync usage to the Matter-Time-Sync-lib submodule (components/matter_time_sync).
-- Updated BSEC state save interval to 1 hour (NVS calibration/state persistence).
-- Added lazy Time Sync cluster init in Matter-Time-Sync-lib to handle node availability timing.
-- TODO: Enable BSEC NVS state save (create NVS namespace and restore calibration state).
