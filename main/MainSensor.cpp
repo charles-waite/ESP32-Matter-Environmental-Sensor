@@ -139,7 +139,7 @@ void loadBsecState() {
 }
 
 void saveBsecStateIfReady(uint32_t nowMs) {
-  static const uint32_t EVERY = 5UL * 60UL * 1000UL;
+  static const uint32_t EVERY = 60UL * 60UL * 1000UL;
   static uint32_t last = 0;
   if (nowMs - last < EVERY) return;
   if (vIAQacc < 2) return;
