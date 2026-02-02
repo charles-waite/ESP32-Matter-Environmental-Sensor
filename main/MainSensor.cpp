@@ -132,18 +132,28 @@ static void onBsecOutputs(const bme68xData d, const bsecOutputs out, Bsec2 b) {
 
 /* ============ BSEC state ============ */
 void loadBsecState() {
-  if (!prefs.begin(NVS_NS, true)) return;
+  // Open RW so the namespace is created if missing.
+  if (!prefs.begin(NVS_NS, false)) {
+    Serial.println("[BSEC2] NVS open failed");
+    return;
+  }
+  if (!prefs.isKey(NVS_KEY)) {
+    prefs.end();
+    return;
+  }
   size_t n = prefs.getBytesLength(NVS_KEY);
   if (n == BSEC_STATE_SIZE) {
     uint8_t buf[BSEC_STATE_SIZE];
     prefs.getBytes(NVS_KEY, buf, BSEC_STATE_SIZE);
     if (env.setState(buf)) Serial.println("[BSEC2] state restored");
+  } else if (n > 0) {
+    Serial.printf("[BSEC2] NVS state size mismatch: %u\n", static_cast<unsigned>(n));
   }
   prefs.end();
 }
 
 void saveBsecStateIfReady(uint32_t nowMs) {
-  static const uint32_t EVERY = 5UL * 60UL * 1000UL;
+  static const uint32_t EVERY = 60UL * 60UL * 1000UL;
   static uint32_t last = 0;
   if (nowMs - last < EVERY) return;
   if (vIAQacc < 2) return;
@@ -335,6 +345,12 @@ static bool getUnixTimeSeconds(int64_t &outSec) {
   return true;
 }
 
+static bool isTimeSynced() {
+  int64_t utcSec = 0;
+  if (!getUnixTimeSeconds(utcSec)) return false;
+  return utcSec >= 978307200; // 2001-01-01T00:00:00Z
+}
+
 static bool computeSunTimes(int y, int m, int d, float lat, float lon, float tzHours,
                             float &sunriseMin, float &sunsetMin) {
   const float zenith = 90.833f;
@@ -421,6 +437,11 @@ static void printTimeDebug() {
   int um = static_cast<int>((utcRem % 3600) / 60);
   int us = static_cast<int>(utcRem % 60);
   snprintf(buf, sizeof(buf), "UTC  : %02d:%02d:%02d", uh, um, us);
+  Serial.println(buf);
+
+  int uy, umon, uday;
+  civilFromDays(utcDay, uy, umon, uday);
+  snprintf(buf, sizeof(buf), "Date : %02d-%02d-%04d", umon, uday, uy);
   Serial.println(buf);
 
   float sunriseMin = NAN, sunsetMin = NAN;
@@ -691,6 +712,8 @@ void drawSensorScreen() {
   s += sIaqLabel(vIAQ);
   s += " (";
   s += isnan(vIAQ) ? "--" : String(vIAQ, 0);
+  s += ",";
+  s += String(vIAQacc);
   s += ")";
   display.drawString(0, 18, s);
 
@@ -703,6 +726,7 @@ void drawSensorScreen() {
   s += isnan(vPres_inHg) ? "--" : String(vPres_inHg, 2);
   s += "inHg ";
   s += pTrend;
+  if (!isTimeSynced()) s += " CLK";
   display.drawString(0, 42, s);
   display.display();
 }

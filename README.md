@@ -36,8 +36,9 @@ The firmware is built with **ESP-IDF** and the **Arduino-ESP32** component, usin
 **Core Features**
 - Matter over Wi-Fi or Thread
 - Thread router-eligible configuration for mains-powered operation
-- BME680 via BSEC2 for accurate IAQ, temperature, humidity, and pressure
-- Periodic state saving (`setState()` / `getState()`) for stable IAQ tracking
+- BME680 via BSEC2 for accurate IAQ, temperature, humidity, and pressure (s-IAQ for stationary use)
+- Periodic state saving (`setState()` / `getState()`) every hour for stable IAQ tracking
+- Matter Time Synchronization for local time (initial sync at commission; after reboot, sync can take up to ~10 minutes)
 - OLED visualization (optional)
 - Serial diagnostics (including Thread role and router eligibility)
 - OLED auto-detection (prints a one-time notice if no display is found)
@@ -55,6 +56,9 @@ The firmware is built with **ESP-IDF** and the **Arduino-ESP32** component, usin
 - `idf.py build`
 - `idf.py flash`
 - `idf.py monitor` (watch commissioning output and Thread role)
+
+**Partitioning**
+- Custom partition table disables OTA (single factory app slot) to free space for data/NVS.
 
 **Device Identity IDs**
 - Device vendor/product IDs and software/hardware versions are configured via `main/chip_project_config.h`.
