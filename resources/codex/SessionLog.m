@@ -20,3 +20,9 @@ Entries
 - Switched BSEC subscription to static IAQ and mapped s-IAQ to Matter AirQuality enum via a dedicated setter (CO2 no longer drives AirQuality).
 - Reworked OLED UI layout: large temp/RH line, sIAQ label+value, CO2 only, and pressure with trend arrow; added sIAQ label mapping and removed boot hint.
 - Updated sIAQ label strings to match Matter AirQuality enum wording (Very Poor / Extremely Poor).
+- Added Kirby bitmap header and OLED screen swap to alternate between sensor view and Kirby image every 30 seconds.
+- TODO: Add animated Kirby screensaver (walk on, stop/face front/wave, walk off).
+- Added Matter Time Synchronization cluster on root endpoint and OLED brightness auto-dimming based on computed sunrise/sunset for Seattle (zip 98103) using Thread time sync.
+- Added serial time debug lines (local PST label, UTC, and time until next sunrise/sunset).
+- Added one-time serial log when Time Sync becomes available.
+- Enabled CONFIG_ENABLE_SNTP_TIME_SYNC in sdkconfig.defaults so Matter can read real-time clock without Wi-Fi.

@@ -30,11 +30,16 @@
 #include <openthread/thread_ftd.h>
 #include <app-common/zap-generated/ids/Clusters.h>
 #include <app-common/zap-generated/ids/Attributes.h>
+#include <app/clusters/time-synchronization-server/time-synchronization-server.h>
+#include <esp_matter_cluster.h>
+#include <esp_matter_endpoint.h>
+#include <system/SystemClock.h>
 #include <Wire.h>
 #include <bsec2.h>
 #define SH1106_COL_OFFSET 2
 #include <SH1106Wire.h>
 #include <qrcodeoled.h>
+#include "kirby.h"
 #include <Preferences.h>
 #include <math.h>
 #include <string.h>
@@ -62,13 +67,21 @@ static constexpr bool DEBUG_SERIAL = false;
 const uint8_t BUTTON_PIN = BOOT_BTN;
 const uint32_t DECOMMISSION_HOLD_MS = 5000;
 const uint32_t UI_INTERVAL_MS = 30000;
+const uint32_t SCREEN_SWAP_MS = 30000;
+const uint32_t BRIGHTNESS_CHECK_MS = 60000;
 
 /* ======== Globals: display, QR ======== */
 SH1106Wire display(OLED_ADDR, -1, -1);
 QRcodeOled qrcode(&display);
 bool showingQR = false;
 uint32_t lastUi = 0;
+uint32_t lastScreenSwap = 0;
+uint32_t lastBrightnessCheck = 0;
+bool showKirby = false;
 static bool oledPresent = false;
+static bool oledDimmed = false;
+static bool timeSyncClusterReady = false;
+static bool timeSyncLogged = false;
 
 /* ============ BSEC2 ============= */
 Bsec2 env;
@@ -151,6 +164,9 @@ static bool detectOled();
 static void setDefaultNodeLabel();
 static void showOledBootScreen();
 static void showOledCalibration();    //-- FOR DEBUG ONLY --
+static void drawKirbyScreen();
+static void updateOledBrightness();
+static void initTimeSyncCluster();
 
 static void configureThreadRouterEligibility() {
 #if CONFIG_ENABLE_MATTER_OVER_THREAD && CONFIG_OPENTHREAD_ENABLED
@@ -258,6 +274,195 @@ static const char* sIaqLabel(float sIaq) {
   if (sIaq <= 200.0f) return "Poor";
   if (sIaq <= 250.0f) return "Very Poor";
   return "Extremely Poor";
+}
+
+static inline int dayOfYear(int y, int m, int d) {
+  static const int kDaysBeforeMonth[] = { 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334 };
+  bool leap = (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0));
+  return kDaysBeforeMonth[m - 1] + d + (leap && m > 2 ? 1 : 0);
+}
+
+static void civilFromDays(int64_t z, int &y, int &m, int &d) {
+  z += 719468;
+  int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+  unsigned doe = static_cast<unsigned>(z - era * 146097);
+  unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  y = static_cast<int>(yoe) + static_cast<int>(era) * 400;
+  unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  unsigned mp = (5 * doy + 2) / 153;
+  d = static_cast<int>(doy - (153 * mp + 2) / 5 + 1);
+  m = static_cast<int>(mp + (mp < 10 ? 3 : -9));
+  y += (m <= 2);
+}
+
+static bool isDstPacific(int y, int m, int d, int hour) {
+  if (m < 3 || m > 11) return false;
+  if (m > 3 && m < 11) return true;
+
+  int dow = 0; // 0=Sunday
+  {
+    int yy = y;
+    int mm = m;
+    int dd = d;
+    if (mm < 3) {
+      mm += 12;
+      yy -= 1;
+    }
+    int k = yy % 100;
+    int j = yy / 100;
+    int h = (dd + (13 * (mm + 1)) / 5 + k + (k / 4) + (j / 4) + (5 * j)) % 7;
+    dow = ((h + 6) % 7);
+  }
+
+  if (m == 3) {
+    int firstSunday = (dow == 0) ? d : (d + (7 - dow));
+    int secondSunday = firstSunday + 7;
+    if (d > secondSunday) return true;
+    if (d < secondSunday) return false;
+    return hour >= 2;
+  }
+
+  int firstSunday = (dow == 0) ? d : (d + (7 - dow));
+  if (d > firstSunday) return false;
+  if (d < firstSunday) return true;
+  return hour < 2;
+}
+
+static bool getUnixTimeSeconds(int64_t &outSec) {
+  chip::System::Clock::Microseconds64 utc;
+  if (chip::System::SystemClock().GetClock_RealTime(utc) != CHIP_NO_ERROR) return false;
+  outSec = static_cast<int64_t>(utc.count() / 1000000);
+  return true;
+}
+
+static bool computeSunTimes(int y, int m, int d, float lat, float lon, float tzHours,
+                            float &sunriseMin, float &sunsetMin) {
+  const float zenith = 90.833f;
+  int N = dayOfYear(y, m, d);
+  float lngHour = lon / 15.0f;
+
+  auto calcTime = [&](bool sunrise) -> float {
+    float t = N + ((sunrise ? 6.0f : 18.0f) - lngHour) / 24.0f;
+    float M = (0.9856f * t) - 3.289f;
+    float L = M + (1.916f * sinf(M * DEG_TO_RAD)) + (0.020f * sinf(2 * M * DEG_TO_RAD)) + 282.634f;
+    while (L < 0) L += 360.0f;
+    while (L >= 360.0f) L -= 360.0f;
+    float RA = atanf(0.91764f * tanf(L * DEG_TO_RAD)) * RAD_TO_DEG;
+    while (RA < 0) RA += 360.0f;
+    while (RA >= 360.0f) RA -= 360.0f;
+    float Lquadrant = floorf(L / 90.0f) * 90.0f;
+    float RAquadrant = floorf(RA / 90.0f) * 90.0f;
+    RA = (RA + (Lquadrant - RAquadrant)) / 15.0f;
+
+    float sinDec = 0.39782f * sinf(L * DEG_TO_RAD);
+    float cosDec = cosf(asinf(sinDec));
+    float cosH = (cosf(zenith * DEG_TO_RAD) - (sinDec * sinf(lat * DEG_TO_RAD))) /
+                 (cosDec * cosf(lat * DEG_TO_RAD));
+    if (cosH > 1.0f || cosH < -1.0f) return NAN;
+    float H = sunrise ? (360.0f - acosf(cosH) * RAD_TO_DEG) : (acosf(cosH) * RAD_TO_DEG);
+    H /= 15.0f;
+    float T = H + RA - (0.06571f * t) - 6.622f;
+    float UT = T - lngHour;
+    while (UT < 0) UT += 24.0f;
+    while (UT >= 24.0f) UT -= 24.0f;
+    float localT = UT + tzHours;
+    while (localT < 0) localT += 24.0f;
+    while (localT >= 24.0f) localT -= 24.0f;
+    return localT * 60.0f;
+  };
+
+  sunriseMin = calcTime(true);
+  sunsetMin = calcTime(false);
+  return isfinite(sunriseMin) && isfinite(sunsetMin);
+}
+
+static void printTimeDebug() {
+  int64_t utcSec = 0;
+  if (!getUnixTimeSeconds(utcSec)) {
+    Serial.println(F("Local: --:--:-- PST"));
+    Serial.println(F("UTC  : --:--:--"));
+    Serial.println(F("Next : --"));
+    return;
+  }
+
+  const float lat = 47.669f;
+  const float lon = -122.347f;
+  int64_t baseOffsetSec = -8 * 3600;
+  int64_t localSec = utcSec + baseOffsetSec;
+  int64_t days = localSec / 86400;
+  int64_t rem = localSec % 86400;
+  if (rem < 0) { rem += 86400; days -= 1; }
+  int hour = static_cast<int>(rem / 3600);
+  int minute = static_cast<int>((rem % 3600) / 60);
+  int second = static_cast<int>(rem % 60);
+
+  int y, m, d;
+  civilFromDays(days, y, m, d);
+  bool dst = isDstPacific(y, m, d, hour);
+  if (dst) {
+    localSec += 3600;
+    days = localSec / 86400;
+    rem = localSec % 86400;
+    if (rem < 0) { rem += 86400; days -= 1; }
+    hour = static_cast<int>(rem / 3600);
+    minute = static_cast<int>((rem % 3600) / 60);
+    second = static_cast<int>(rem % 60);
+    civilFromDays(days, y, m, d);
+  }
+
+  char buf[48];
+  snprintf(buf, sizeof(buf), "Local: %02d:%02d:%02d PST", hour, minute, second);
+  Serial.println(buf);
+
+  int64_t utcDay = utcSec / 86400;
+  int64_t utcRem = utcSec % 86400;
+  if (utcRem < 0) { utcRem += 86400; utcDay -= 1; }
+  int uh = static_cast<int>(utcRem / 3600);
+  int um = static_cast<int>((utcRem % 3600) / 60);
+  int us = static_cast<int>(utcRem % 60);
+  snprintf(buf, sizeof(buf), "UTC  : %02d:%02d:%02d", uh, um, us);
+  Serial.println(buf);
+
+  float sunriseMin = NAN, sunsetMin = NAN;
+  float tzHours = dst ? -7.0f : -8.0f;
+  if (!computeSunTimes(y, m, d, lat, lon, tzHours, sunriseMin, sunsetMin)) {
+    Serial.println(F("Next : --"));
+    return;
+  }
+
+  float nowMin = hour * 60.0f + minute + (second / 60.0f);
+  float targetMin = NAN;
+  const char *label = "Sunrise";
+  if (nowMin < sunriseMin) {
+    targetMin = sunriseMin;
+    label = "Sunrise";
+  } else if (nowMin < sunsetMin) {
+    targetMin = sunsetMin;
+    label = "Sunset";
+  } else {
+    int y2, m2, d2;
+    civilFromDays(days + 1, y2, m2, d2);
+    bool dst2 = isDstPacific(y2, m2, d2, 12);
+    float tz2 = dst2 ? -7.0f : -8.0f;
+    float sr2 = NAN, ss2 = NAN;
+    if (computeSunTimes(y2, m2, d2, lat, lon, tz2, sr2, ss2)) {
+      targetMin = sr2 + 1440.0f;
+      label = "Sunrise";
+    }
+  }
+
+  if (!isfinite(targetMin)) {
+    Serial.println(F("Next : --"));
+    return;
+  }
+
+  float deltaMin = targetMin - nowMin;
+  int deltaSec = static_cast<int>(deltaMin * 60.0f + 0.5f);
+  int dh = deltaSec / 3600;
+  int dm = (deltaSec % 3600) / 60;
+  int ds = deltaSec % 60;
+  snprintf(buf, sizeof(buf), "Next : %s in %02d:%02d:%02d", label, dh, dm, ds);
+  Serial.println(buf);
 }
 
 static const char* threadRoleName(otDeviceRole role) {
@@ -451,6 +656,7 @@ void printSerial() {
   Serial.print(F("Alt : "));
   Serial.print(ALTITUDE_FT);
   Serial.println(F(" ft (97.8 m)"));
+  printTimeDebug();
 #if CONFIG_ENABLE_MATTER_OVER_THREAD && CONFIG_OPENTHREAD_ENABLED
   otInstance* instance = esp_openthread_get_instance();
   if (instance) {
@@ -499,6 +705,70 @@ void drawSensorScreen() {
   s += pTrend;
   display.drawString(0, 42, s);
   display.display();
+}
+
+static void drawKirbyScreen() {
+  if (!oledPresent) return;
+  display.clear();
+  int x = (display.getWidth() - KIRBY_W) / 2;
+  int y = (display.getHeight() - KIRBY_H) / 2;
+  display.drawXbm(x, y, KIRBY_W, KIRBY_H, kirby_bits);
+  display.display();
+}
+
+static void initTimeSyncCluster() {
+  esp_matter::node_t *node = esp_matter::node::get();
+  if (!node) return;
+  esp_matter::endpoint_t *root = esp_matter::endpoint::get(node, 0);
+  if (!root) return;
+
+  esp_matter::cluster::time_synchronization::config_t cfg;
+  esp_matter::cluster_t *cluster = esp_matter::cluster::time_synchronization::create(root, &cfg, CLUSTER_FLAG_SERVER);
+  timeSyncClusterReady = (cluster != nullptr);
+}
+
+static void updateOledBrightness() {
+  if (!oledPresent || !timeSyncClusterReady) return;
+  int64_t utcSec = 0;
+  if (!getUnixTimeSeconds(utcSec)) return;
+  if (!timeSyncLogged) {
+    Serial.println(F("[Time] Sync successful"));
+    timeSyncLogged = true;
+  }
+
+  const float lat = 47.669f;
+  const float lon = -122.347f;
+  int64_t baseOffsetSec = -8 * 3600;
+  int64_t localSec = utcSec + baseOffsetSec;
+  int64_t days = localSec / 86400;
+  int64_t rem = localSec % 86400;
+  if (rem < 0) { rem += 86400; days -= 1; }
+  int hour = static_cast<int>(rem / 3600);
+  int minute = static_cast<int>((rem % 3600) / 60);
+
+  int y, m, d;
+  civilFromDays(days, y, m, d);
+  bool dst = isDstPacific(y, m, d, hour);
+  float tzHours = dst ? -7.0f : -8.0f;
+  if (dst) {
+    localSec += 3600;
+    days = localSec / 86400;
+    rem = localSec % 86400;
+    if (rem < 0) { rem += 86400; days -= 1; }
+    hour = static_cast<int>(rem / 3600);
+    minute = static_cast<int>((rem % 3600) / 60);
+    civilFromDays(days, y, m, d);
+  }
+
+  float sunriseMin = NAN, sunsetMin = NAN;
+  if (!computeSunTimes(y, m, d, lat, lon, tzHours, sunriseMin, sunsetMin)) return;
+
+  float nowMin = hour * 60.0f + minute;
+  bool shouldDim = (nowMin >= sunsetMin || nowMin < sunriseMin);
+  if (shouldDim != oledDimmed) {
+    display.setContrast(shouldDim ? 1 : 255);
+    oledDimmed = shouldDim;
+  }
 }
 
 /* ============== QR helpers ============== */
@@ -624,6 +894,7 @@ void setup() {
   epRH.begin(0.0);
   epPress.begin(1013.25);
   epAir.begin(100.0);
+  initTimeSyncCluster();
 
   Matter.begin();
   configureThreadRouterEligibility();
@@ -666,9 +937,18 @@ void loop() {
 
   if (!showingQR && (millis() - lastUi > UI_INTERVAL_MS)) {
     lastUi = millis();
+    if (millis() - lastScreenSwap > SCREEN_SWAP_MS) {
+      lastScreenSwap = millis();
+      showKirby = !showKirby;
+    }
     printSerial();
-    drawSensorScreen();
+    if (showKirby) drawKirbyScreen();
+    else drawSensorScreen();
     updateMatterEndpoints();
+  }
+  if (millis() - lastBrightnessCheck > BRIGHTNESS_CHECK_MS) {
+    lastBrightnessCheck = millis();
+    updateOledBrightness();
   }
   saveBsecStateIfReady(millis());
   
