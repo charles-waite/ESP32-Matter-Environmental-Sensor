@@ -17,7 +17,13 @@
 - `idf.py build`: compile the firmware with ESP-IDF and Arduino components.
 - `idf.py flash`: flash the firmware to a connected device.
 - `idf.py monitor`: open the serial monitor (use for commissioning output and logs).
+- Tip: `idf.py monitor --no-reset` avoids DTR/RTS reset on connect.
 - `idf.py flash monitor`: common one-step flash + monitor loop.
+
+## Operational Gotchas
+- Matter time sync can take ~10+ minutes after reboot; initial time may show 2000-01-01 until synced.
+- After partition table changes, run `idf.py erase-flash` before flashing to avoid invalid header boot errors.
+- Avoid placing files in `managed_components`; stray files (e.g., `.DS_Store`) can break component integrity checks.
 
 ## Coding Style & Naming Conventions
 - Follow existing C++/Arduino style in `main/MainSensor.cpp`: 2-space indentation, braces on the same line, short helper functions near usage.

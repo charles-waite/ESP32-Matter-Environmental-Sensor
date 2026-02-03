@@ -26,4 +26,8 @@ Entries
 - Added serial time debug lines (local PST label, UTC, and time until next sunrise/sunset).
 - Added one-time serial log when Time Sync becomes available.
 - Enabled CONFIG_ENABLE_SNTP_TIME_SYNC in sdkconfig.defaults so Matter can read real-time clock without Wi-Fi.
+- Gotcha: Matter time sync can take ~10+ minutes after reboot; initial time often starts at 2000-01-01 until sync arrives.
+- Gotcha: `idf.py monitor` toggles DTR/RTS and can reset the device; use `--no-reset` to avoid.
+- Gotcha: After partition table changes, `idf.py erase-flash` is required to avoid invalid header boot errors.
+- Gotcha: `.DS_Store` or missing component hashes in `managed_components` can break builds; avoid manual files there.
 - TODO: Fix Preferences NVS begin() NOT_FOUND so BSEC state save/restore can initialize and persist calibration.
