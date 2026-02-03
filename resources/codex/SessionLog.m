@@ -31,3 +31,5 @@ Entries
 - Gotcha: After partition table changes, `idf.py erase-flash` is required to avoid invalid header boot errors.
 - Gotcha: `.DS_Store` or missing component hashes in `managed_components` can break builds; avoid manual files there.
 - TODO: Fix Preferences NVS begin() NOT_FOUND so BSEC state save/restore can initialize and persist calibration.
+- Re-integrated Matter time sync as a component; use time_sync_init() before Matter.begin() and time_sync_poll() in loop, with a ready callback for the first successful sync.
+- Added a log when the Time Synchronization cluster is created; init now runs after Matter.begin() so the root endpoint is available.
