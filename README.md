@@ -57,6 +57,30 @@ The firmware is built with **ESP-IDF** and the **Arduino-ESP32** component, usin
 - `idf.py flash`
 - `idf.py monitor` (watch commissioning output and Thread role)
 
+**Hardware Flashing Guide**
+
+App-only (device already has bootloader + partition table):
+```
+python -m esptool --chip esp32c6 -b 460800 --before default_reset --after hard_reset \
+  write_flash 0x30000 build/WALL-Env_Sensor.bin
+```
+
+Full flash (first-time flash or after partition changes):
+```
+python -m esptool --chip esp32c6 -b 460800 --before default_reset --after hard_reset \
+  write_flash 0x0 build/bootloader/bootloader.bin \
+             0x8000 build/partition_table/partition-table.bin \
+             0x30000 build/WALL-Env_Sensor.bin
+```
+
+Single image (merge bootloader + partition table + app):
+```
+python -m esptool --chip esp32c6 merge_bin -o build/full_flash.bin \
+  0x0 build/bootloader/bootloader.bin \
+  0x8000 build/partition_table/partition-table.bin \
+  0x30000 build/WALL-Env_Sensor.bin
+```
+
 **Partitioning**
 - Custom partition table disables OTA (single factory app slot) to free space for data/NVS.
 
