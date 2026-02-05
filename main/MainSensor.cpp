@@ -212,6 +212,7 @@ void showQrOnceOnOLED() {
   if (!oledPresent) return;
   qrcode.init();
   display.setContrast(255);
+  oledDimmed = false;
   clearDisplayHard();
 
   String url = Matter.getOnboardingQRCodeUrl();
@@ -970,7 +971,7 @@ void loop() {
     else drawSensorScreen();
     updateMatterEndpoints();
   }
-  if (millis() - lastBrightnessCheck > BRIGHTNESS_CHECK_MS) {
+  if (!showingQR && (millis() - lastBrightnessCheck > BRIGHTNESS_CHECK_MS)) {
     lastBrightnessCheck = millis();
     updateOledBrightness();
   }
