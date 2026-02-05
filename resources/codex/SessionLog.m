@@ -27,3 +27,8 @@ Entries
 - Added one-time serial log when Time Sync becomes available.
 - Enabled CONFIG_ENABLE_SNTP_TIME_SYNC in sdkconfig.defaults so Matter can read real-time clock without Wi-Fi.
 - TODO: Fix Preferences NVS begin() NOT_FOUND so BSEC state save/restore can initialize and persist calibration.
+- Added ESP_IDF_MIGRATION_PLAN.md with a detailed handoff plan for a full ESP-IDF + esp-matter rewrite in a new repo.
+- Added RELEASE_NOTES_TEMPLATE.md with app-only and full-flash instructions, plus a merge_bin full image example.
+- Added Hardware Flashing Guide section to README and generated build/full_flash.bin merged image.
+- Enabled BLE commissioning autostart in sdkconfig.defaults to address commissioning advertise failures.
+- Frozen OLED dimming updates while QR is showing and force full contrast to reduce camera banding.
